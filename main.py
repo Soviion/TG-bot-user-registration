@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import logging
 
@@ -16,6 +17,7 @@ import db
 from handlers import group
 from handlers import registration  
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(group.router)
     dp.include_router(registration.router)
+ 
 
     try:
         await db.init_pool()

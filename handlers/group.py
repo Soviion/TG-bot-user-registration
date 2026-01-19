@@ -1,10 +1,17 @@
+# group.py
 from aiogram import Router, Bot
 from aiogram.types import ChatMemberUpdated, Message
 from aiogram.filters import ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
 
+from datetime import datetime, timedelta
+import pytz
+
 import db
 
 router = Router(name="group_events")
+
+minsk_tz = pytz.timezone("Europe/Minsk")
+now_minsk = datetime.now(minsk_tz).replace(tzinfo=None)
 
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=(IS_NOT_MEMBER >> IS_MEMBER)))
@@ -18,13 +25,22 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     
     async with db.pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (telegram_id, username, is_verified, group_id)
-            VALUES ($1, $2, FALSE, $3)
+            INSERT INTO users (telegram_id, username, is_verified, group_id, scholarship, created_at)
+            VALUES ($1, $2, FALSE, $3, FALSE, $4)
             ON CONFLICT (telegram_id) DO UPDATE
             SET 
-                username = EXCLUDED.username,
-                group_id = EXCLUDED.group_id
-        """, user.id, user.username, chat_id)
+                username     = EXCLUDED.username,
+                is_verified  = FALSE,
+                group_id     = EXCLUDED.group_id,
+                full_name    = NULL,
+                group_number = NULL,
+                faculty      = NULL,
+                mobile_number= NULL,
+                stud_number  = NULL,
+                form_educ    = NULL,
+                scholarship  = FALSE,
+                updated_at   = $4
+        """, user.id, user.username, chat_id, now_minsk)
 
     # 1. Ограничиваем пользователя сразу
     await bot.restrict_chat_member(
