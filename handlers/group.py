@@ -10,6 +10,7 @@ router = Router(name="group_events")
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=(IS_NOT_MEMBER >> IS_MEMBER)))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     user = event.new_chat_member.user
+    chat_id = event.chat.id
     
     # Самое важное — создаём запись в базе, если её ещё нет
     if db.pool is None:
@@ -17,11 +18,13 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     
     async with db.pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (telegram_id, username, is_verified)
-            VALUES ($1, $2, FALSE)
+            INSERT INTO users (telegram_id, username, is_verified, group_id)
+            VALUES ($1, $2, FALSE, $3)
             ON CONFLICT (telegram_id) DO UPDATE
-            SET username = EXCLUDED.username
-        """, user.id, user.username)
+            SET 
+                username = EXCLUDED.username,
+                group_id = EXCLUDED.group_id
+        """, user.id, user.username, chat_id)
 
     # 1. Ограничиваем пользователя сразу
     await bot.restrict_chat_member(
@@ -46,3 +49,4 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
         "Просто напиши ему /start",
         parse_mode="HTML"
     )
+

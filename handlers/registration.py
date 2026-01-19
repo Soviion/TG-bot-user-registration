@@ -1,4 +1,4 @@
-from aiogram import types
+from aiogram import Bot, types
 from aiogram.types import CallbackQuery
 from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
@@ -214,59 +214,105 @@ async def process_scholarship(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.in_({"confirm_registration", "edit_registration"}))
-async def process_confirm_callback(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.delete()  # убираем сообщение с вопросом и кнопками
+async def process_confirm_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await callback.message.delete()  # убираем сообщение с данными и кнопками
     
     if callback.data == "confirm_registration":
         data = await state.get_data()
         
-        # Сохраняем данные в базу
-        async with db.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE users
-                SET 
-                    full_name     = $2,
-                    group_number  = $3,
-                    faculty       = $4,
-                    mobile_number = $5,
-                    stud_number   = $6,
-                    form_educ     = $7,
-                    scholarship   = $8,
-                    updated_at    = NOW()
-                WHERE telegram_id = $1
-            """,
-                callback.from_user.id,
-                data["full_name"],
-                data["group_number"],
-                data["faculty"],
-                data["mobile_number"],
-                data["stud_number"],
-                data["form_educ"],
-                data["scholarship"]
-            )
-        
-        # Пытаемся завершить верификацию
-        success = await db.try_complete_verification(db.pool, callback.from_user.id)
-        
-        if success:
-            await callback.message.answer(
-                "Регистрация успешно завершена!\n"
-                "Твои права в группе должны быть восстановлены в ближайшие секунды."
-            )
-            # TODO: здесь позже добавить размут в группе
+        # Нормализация формы обучения — только "платное" или "бюджет"
+        form_educ_raw = data.get("form_educ", "").strip().lower()
+        if "бюдж" in form_educ_raw:
+            form_educ = "бюджет"
         else:
-            await callback.message.answer(
-                "Что-то пошло не так при верификации.\n"
-                "Пожалуйста, напишите администратору."
-            )
+            form_educ = "платное"  # всё остальное считаем платным
         
-        await state.clear()
+        # Сохраняем данные в базу
+        try:
+            async with db.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE users
+                    SET 
+                        full_name     = $2,
+                        group_number  = $3,
+                        faculty       = $4,
+                        mobile_number = $5,
+                        stud_number   = $6,
+                        form_educ     = $7,
+                        scholarship   = $8,
+                        updated_at    = NOW()
+                    WHERE telegram_id = $1
+                """,
+                    callback.from_user.id,
+                    data.get("full_name"),
+                    data.get("group_number"),
+                    data.get("faculty"),
+                    data.get("mobile_number"),
+                    data.get("stud_number"),
+                    form_educ,
+                    data.get("scholarship")
+                )
+            
+            # Завершаем верификацию
+            success = await db.try_complete_verification(db.pool, callback.from_user.id)
+            
+            if success:
+                # Пытаемся размутить в группе
+                async with db.pool.acquire() as conn:
+                    group_id = await conn.fetchval(
+                        "SELECT group_id FROM users WHERE telegram_id = $1",
+                        callback.from_user.id
+                    )
+                
+                if group_id:
+                    try:
+                        from aiogram.types import ChatPermissions
+                        
+                        full_permissions = ChatPermissions(
+                            can_send_messages=True,
+                            can_send_media_messages=True,
+                            can_send_polls=True,
+                            can_send_other_messages=True,
+                            can_add_web_page_previews=True,
+                            can_change_info=False,          # обычно не даём
+                            can_invite_users=True,
+                            can_pin_messages=False          # обычно не даём
+                        )
+                        
+                        await bot.restrict_chat_member(
+                            chat_id=group_id,
+                            user_id=callback.from_user.id,
+                            permissions=full_permissions
+                        )
+                        
+                        await callback.message.answer(
+                            "Регистрация успешно завершена!\n"
+                            "Права в группе полностью восстановлены ✅\n"
+                            "Теперь ты можешь свободно общаться в группе."
+                        )
+                    except Exception as e:
+                        print(f"Ошибка при снятии ограничений: {e}")
+                        await callback.message.answer(
+                            "Регистрация завершена!\n"
+                            "Но не удалось автоматически снять ограничения в группе.\n"
+                            "Попроси админа группы сделать это вручную."
+                        )
+                else:
+                    await callback.message.answer(
+                        "Регистрация завершена успешно!\n"
+                        "(Группа не найдена — права нужно снять вручную)"
+                    )
+        
+        except Exception as e:
+            print(f"Ошибка сохранения данных: {e}")
+            await callback.message.answer("Произошла ошибка при сохранении. Попробуй заново (/start)")
     
-    else:  # "edit_registration"
+    else:  # edit_registration
         await callback.message.answer(
-            "Хорошо, давайте исправим.\n"
-            "Начнём заново. Введите ФИО полностью:"
+            "Хорошо, давай исправим.\n"
+            "Введи ФИО заново:"
         )
         await state.set_state(Registration.full_name)
     
-    await callback.answer()  # убираем "часики" у кнопки
+    await callback.answer()
+    await state.clear()
