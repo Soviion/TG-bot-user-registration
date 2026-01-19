@@ -17,7 +17,6 @@ import db
 from handlers import group
 from handlers import registration  
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
