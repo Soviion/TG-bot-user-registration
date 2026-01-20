@@ -2,6 +2,7 @@
 from aiogram import Router, Bot
 from aiogram.types import ChatMemberUpdated, Message
 from aiogram.filters import ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from datetime import datetime, timedelta
 import pytz
@@ -13,6 +14,10 @@ router = Router(name="group_events")
 minsk_tz = pytz.timezone("Europe/Minsk")
 now_minsk = datetime.now(minsk_tz).replace(tzinfo=None)
 
+
+keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="Перейти к боту", url="https://t.me/register_yivrbot")]
+])
 
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=(IS_NOT_MEMBER >> IS_MEMBER)))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
@@ -57,12 +62,17 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
             "can_pin_messages": False,
         }
     )
-    
+
+
+
+
+
     # 2. Приветственное сообщение с упоминанием
     await event.answer(
         f"👋 {user.mention_html()} добро пожаловать!\n\n"
         "Чтобы получить возможность писать в чате — пройди регистрацию в личных сообщениях у бота.\n"
         "Просто напиши ему /start",
+        reply_markup=keyboard,
         parse_mode="HTML"
     )
 

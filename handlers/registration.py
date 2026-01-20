@@ -27,6 +27,24 @@ class Registration(StatesGroup):
     scholarship = State()
     confirm = State()
 
+FACULTIES = {
+    "ФКСиС": "FKSiS",
+    "ФИТУ": "FITU",
+    "ФКП": "FKP",
+    "ФИБ": "FIB",
+    "ИЭФ": "IEF",
+    "ФРЭ": "FRE",
+}
+
+faculty_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="ФКСиС"), KeyboardButton(text="ФИТУ"), KeyboardButton(text="ФКП")],
+        [KeyboardButton(text="ФИБ"), KeyboardButton(text="ИЭФ"), KeyboardButton(text="ФРЭ")],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
 
 class EditRegistration(StatesGroup):
     editing = State()
@@ -172,6 +190,15 @@ async def start_registration_button(message: Message, state: FSMContext):
 async def show_edit_menu(message_or_query, state: FSMContext):
     data = await state.get_data()
 
+    FACULTY_REVERSE = {
+        "FKSiS": "ФКСиС",
+        "FITU": "ФИТУ",
+        "FKP": "ФКП",
+        "FIB": "ФИБ",
+        "IEF": "ИЭФ",
+        "FRE": "ФРЭ",
+    }
+
     text = "Что нужно изменить?\n\n"
     fields = [
         ("full_name", "ФИО"),
@@ -187,8 +214,13 @@ async def show_edit_menu(message_or_query, state: FSMContext):
 
     for field_key, field_name in fields:
         value = data.get(field_key, "—")
+
+        if field_key == "faculty":
+            value = FACULTY_REVERSE.get(value, "—")
+
         if field_key == "scholarship":
             value = "Да" if value else "Нет"
+
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
                 text=f"{field_name}: {value}",
@@ -203,6 +235,7 @@ async def show_edit_menu(message_or_query, state: FSMContext):
     await message_or_query.answer(text, reply_markup=keyboard)
 
 
+
 # Запрос нового значения поля (при редактировании)
 @router.callback_query(F.data.startswith("edit_field_"))
 async def process_edit_field(callback: CallbackQuery, state: FSMContext):
@@ -211,7 +244,7 @@ async def process_edit_field(callback: CallbackQuery, state: FSMContext):
     prompts = {
         "full_name": "Введи ФИО полностью:",
         "group_number": "Теперь введи номер группы (6 цифр):",
-        "faculty": "Теперь введи название факультета (например: ФИТУ, ИЭФ, ФКСиС, ФИБ, ФКП, ФРЭ)",
+        "faculty": "Выбери факультет:",
         "mobile_number": "Введи номер телефона (+375#########):",
         "stud_number": "Введи номер студенческого (8 цифр):",
         "form_educ": "Выбери форму обучения:",
@@ -231,6 +264,8 @@ async def process_edit_field(callback: CallbackQuery, state: FSMContext):
             resize_keyboard=True,
             one_time_keyboard=True
         )
+    elif field == "faculty":
+        kb = faculty_kb
 
     await state.set_state(EditRegistration.editing)
     await state.update_data(editing_field=field)
@@ -253,9 +288,11 @@ async def process_edit_value(message: Message, state: FSMContext):
         await message.answer("Группа — ровно 6 цифр")
         return
 
-    if field == "faculty" and len(value) < 3:
-        await message.answer("Название факульетат слишком короткое")
-        return
+    if field == "faculty":
+        if value not in FACULTIES:
+            await message.answer("Выбери факультет с кнопок 👇")
+            return
+        value = FACULTIES[value]
 
     if field == "mobile_number":
         v = value.replace(" ", "").replace("-", "")
@@ -316,19 +353,29 @@ async def process_group_number(message: Message, state: FSMContext):
         return
     
     await state.update_data(group_number=group)
-    await message.answer("Теперь введи название факультета (например: ФИТУ, ИЭФ, ФКСиС, ФИБ, ФКП, ФРЭ)")
+    await message.answer(
+        "Выбери свой факультет:",
+        reply_markup=faculty_kb
+    )
     await state.set_state(Registration.faculty)
 
 
 @router.message(Registration.faculty)
 async def process_faculty(message: Message, state: FSMContext):
-    faculty = message.text.strip()
-    if len(faculty) < 3:
-        await message.answer("Название факультета слишком короткое, попробуй ещё раз")
+    faculty_label = message.text.strip()
+
+    if faculty_label not in FACULTIES:
+        await message.answer("Пожалуйста, выбери факультет с кнопок ниже 👇")
         return
+
+    faculty_code = FACULTIES[faculty_label]
+
+    await state.update_data(faculty=faculty_code)
     
-    await state.update_data(faculty=faculty)
-    await message.answer("Введи свой номер мобильного телефона\n(в формате +375#########)")
+    await message.answer(
+        "Введи свой номер мобильного телефона\n(в формате +375#########)",
+        reply_markup=ReplyKeyboardRemove()
+    )
     await state.set_state(Registration.mobile_number)
 
 
