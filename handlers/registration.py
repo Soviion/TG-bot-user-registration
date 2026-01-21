@@ -9,8 +9,12 @@ from aiogram.fsm.state import State, StatesGroup
 import config
 from db import try_complete_verification, pool, is_user_verified
 
+
 import hmac
 import hashlib
+
+from utils import get_user_info, log_action
+
 
 def sign_data(data: str) -> str:
     h = hmac.new(config.CALLBACK_SECRET.encode(), data.encode(), hashlib.sha256)
@@ -84,8 +88,8 @@ async def cmd_start(message: Message, state: FSMContext):
         return  
      
     user = message.from_user
+    log_action("Запуск /start", user)  # ← лог
     user_id = user.id
-
     await state.clear()
 
     async with db.pool.acquire() as conn:
@@ -128,6 +132,7 @@ async def cmd_start(message: Message, state: FSMContext):
         keyboard.keyboard.append([KeyboardButton(text="Начать регистрацию")])
 
     await message.answer(text, reply_markup=keyboard)
+    log_action("Отправлено приветствие", user)
 
 
 # /reg — сразу регистрация
@@ -160,12 +165,12 @@ async def show_status(message: Message):
 
     user = message.from_user
     user_id = user.id
-
+    
     verified = await db.is_user_verified(user_id)
 
     text = (
         f"Твой telegram_id: <code>{user_id}</code>\n"
-        f"Username: @{user.username or 'нет'}\n"
+        f"Username: @{user.username or 'None'}\n"
         f"Статус в базе: {'✅ зарегистрирован' if verified else '⏳ ещё не зарегистрирован'}"
     )
 
@@ -539,7 +544,11 @@ async def process_edit_registration(callback: CallbackQuery, state: FSMContext):
 
 # Подтверждение изменений — сохранение в базу
 async def process_confirm_registration(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    user_id = callback.from_user.id
+    user = callback.from_user
+    user_id = user.id
+    user_info = get_user_info(user)  # из utils.py
+
+    log_action("Начало подтверждения данных", user)
 
     already_verified = await db.is_user_verified(user_id)
 
@@ -547,12 +556,13 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
 
     data = await state.get_data()
 
-    # Нормализация формы обучения
+    # Нормализация формы обучения (защита от None)
     form_educ_raw = (data.get("form_educ") or "").strip().lower()
     form_educ = "бюджет" if "бюдж" in form_educ_raw else "платное"
 
     try:
-        # 1️⃣ Обновляем данные ВСЕГДА
+        # 1. Обновляем данные ВСЕГДА (даже если уже верифицирован)
+        log_action("Обновление пользовательских данных", user)
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE users
@@ -577,27 +587,32 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                 data.get("scholarship")
             )
 
-        # 2️⃣ Если пользователь НЕ был верифицирован — завершаем верификацию
+        # 2. Если пользователь ещё НЕ верифицирован — завершаем верификацию
         if not already_verified:
+            log_action("Попытка верификации (первый раз)", user)
             success = await db.try_complete_verification(db.pool, user_id)
 
             if not success:
+                log_action("Верификация НЕ удалась", user, "поля не заполнены", "ERROR")
                 await callback.message.answer(
                     "Не удалось завершить верификацию.\n"
-                    "Проверьте данные или напишите администратору."
+                    "Проверьте, все ли поля заполнены правильно, или напишите администратору."
                 )
                 await state.clear()
                 await callback.answer()
                 return
 
-        # 3️⃣ Сообщение об успехе (общее)
+            log_action("Верификация успешно завершена", user)
+
+        # 3. Общее сообщение об успехе
         await callback.message.answer(
             "Данные успешно сохранены ✅",
             reply_markup=ReplyKeyboardRemove()
         )
 
-        # 4️⃣ Размучиваем ТОЛЬКО при первой регистрации
+        # 4. Размучиваем ТОЛЬКО при первой верификации
         if not already_verified:
+            log_action("Попытка размутывания", user)
             async with db.pool.acquire() as conn:
                 group_id = await conn.fetchval(
                     "SELECT group_id FROM users WHERE telegram_id = $1",
@@ -614,7 +629,8 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                         can_send_polls=True,
                         can_send_other_messages=True,
                         can_add_web_page_previews=True,
-                        can_invite_users=True
+                        can_invite_users=True,
+                        can_pin_messages=False
                     )
 
                     await bot.restrict_chat_member(
@@ -623,18 +639,22 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                         permissions=permissions
                     )
 
-                    await callback.message.answer(
-                        "Права в группе полностью восстановлены ✅"
-                    )
+                    log_action("Размут выполнен успешно", user, f"group_id={group_id}")
+                    await callback.message.answer("Права в группе полностью восстановлены ✅")
 
                 except Exception as e:
-                    print(f"Ошибка размутывания: {e}")
+                    log_action("Ошибка размутывания", user, str(e), "ERROR")
                     await callback.message.answer(
                         "Не удалось автоматически снять ограничения.\n"
                         "Попроси администратора сделать это вручную."
                     )
+            else:
+                log_action("Группа не найдена для размутывания", user, "group_id=None", "WARNING")
+                await callback.message.answer(
+                    "Группа не найдена в базе — попроси админа группы снять ограничения вручную."
+                )
 
-        # 5️⃣ Главное меню
+        # 5. Главное меню
         keyboard = ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="Статус"), KeyboardButton(text="Обновить данные")]
@@ -643,9 +663,10 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
         )
 
         await callback.message.answer("Меню:", reply_markup=keyboard)
+        log_action("Показан главный меню", user)
 
     except Exception as e:
-        print(f"Ошибка при подтверждении регистрации: {e}")
+        log_action("Критическая ошибка при подтверждении", user, str(e), "ERROR")
         await callback.message.answer(
             "Произошла ошибка при сохранении данных. Попробуйте заново (/start)"
         )
@@ -653,31 +674,36 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
     await state.clear()
     await callback.answer()
 
+
 @router.callback_query()
 async def secure_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    user = callback.from_user
     cb_data = callback.data
 
+    log_action("Callback получен", user, f"data: {cb_data}")
+
     if ':' not in cb_data:
+        log_action("Неверный callback (без подписи)", user, cb_data, "WARNING")
         await callback.answer("Неверный запрос", show_alert=True)
         return
 
     payload, signature = cb_data.rsplit(':', 1)
 
     if not is_valid_signature(payload, signature):
-        await callback.answer("Подпись не совпадает! Действие отклонено.", show_alert=True)
+        log_action("Неверная подпись", user, cb_data, "WARNING")
+        await callback.answer("Подпись не совпадает!", show_alert=True)
         return
 
-    # Всё безопасно — вызываем нужную функцию
-    if payload == "confirm_registration":
-        await process_confirm_registration(callback, state, bot)
+    log_action("Подпись OK", user, payload)
 
+    if payload == "confirm_registration":
+        log_action("Подтверждение регистрации", user)
+        await process_confirm_registration(callback, state, bot)
     elif payload.startswith("edit_field_"):
         field = payload.replace("edit_field_", "")
+        log_action(f"Редактирование поля {field}", user)
         await process_edit_field(callback, state)
-
-    elif payload == "edit_registration":
-        await process_edit_registration(callback, state)
-        
     else:
+        log_action("Неизвестный callback", user, payload, "WARNING")
         await callback.answer("Неизвестная команда", show_alert=True)
     

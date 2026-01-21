@@ -1,4 +1,5 @@
 # group.py
+
 from aiogram import F, Router, Bot
 from aiogram.types import ChatMemberUpdated, Message
 from aiogram.filters import ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
@@ -7,7 +8,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
 import pytz
 
+
 import db
+from utils import log_action
 
 router = Router(name="group_events")
 
@@ -22,8 +25,10 @@ keyboard = InlineKeyboardMarkup(inline_keyboard=[
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=(IS_NOT_MEMBER >> IS_MEMBER)))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     user = event.new_chat_member.user
+    log_action("Пользователь зашёл в группу", user, f"chat_id={event.chat.id}")
     chat_id = event.chat.id
-    
+   
+
     # Самое важное — создаём запись в базе, если её ещё нет
     if db.pool is None:
         await db.init_pool()  # на всякий случай, если пул не инициализирован
@@ -280,25 +285,33 @@ async def cmd_help(message: Message):
 
 @router.message(F.text.startswith("/unmute"))
 async def cmd_unmute(message: Message, bot: Bot):
-
     if message.chat.type not in ("group", "supergroup"):
         return
 
     # Проверка прав
     if not await is_bot_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет прав использовать эту команду.")
+        await send_temp_message(message, "⛔ У вас нет прав использовать эту команду.")
         return
 
-    # Должно быть ответом на сообщение
-    if not message.reply_to_message:
-        await message.answer("Команду нужно использовать ответом на сообщение пользователя.")
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].startswith("@"):
+        await send_temp_message(message, "Использование: /unmute @username")
         return
 
-    user_id = message.reply_to_message.from_user.id
-    chat_id = message.chat.id
+    username = parts[1][1:]  # убираем @
 
+    async with db.pool.acquire() as conn:
+        user_id = await conn.fetchval(
+            "SELECT telegram_id FROM users WHERE username = $1",
+            username
+        )
+
+    if not user_id:
+        await send_temp_message(message, f"Пользователь @{username} не найден в базе.")
+        return
+
+    # Размьючиваем
     from aiogram.types import ChatPermissions
-    # Возвращаем обычные права (только писать можно, не меняем роль)
     perms = ChatPermissions(
         can_send_messages=True,
         can_send_media_messages=True,
@@ -310,6 +323,10 @@ async def cmd_unmute(message: Message, bot: Bot):
         can_pin_messages=False
     )
 
-    await bot.restrict_chat_member(chat_id=chat_id, user_id=user_id, permissions=perms)
+    await bot.restrict_chat_member(
+        chat_id=message.chat.id,
+        user_id=user_id,
+        permissions=perms
+    )
 
-    await message.answer(f"✅ Пользователь {message.reply_to_message.from_user.mention_html()} размьючен.", parse_mode="HTML")
+    await send_temp_message(message, f"✅ Пользователь @{username} размьючен.")
