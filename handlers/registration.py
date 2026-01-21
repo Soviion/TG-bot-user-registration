@@ -1,11 +1,28 @@
 # registration.py
+import re
 from aiogram import Router, F, Bot
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import config
 from db import try_complete_verification, pool, is_user_verified
+
+import hmac
+import hashlib
+
+def sign_data(data: str) -> str:
+    h = hmac.new(config.CALLBACK_SECRET.encode(), data.encode(), hashlib.sha256)
+    return h.hexdigest()[:12]  # 12 символов достаточно для защиты
+
+
+def is_valid_signature(payload: str, signature: str) -> bool:
+    expected = sign_data(payload)
+    return hmac.compare_digest(expected, signature)
+
+def make_signed_callback(payload: str) -> str:
+    return f"{payload}:{sign_data(payload)}"
 
 import sys
 import os
@@ -36,6 +53,15 @@ FACULTIES = {
     "ФРЭ": "FRE",
 }
 
+FACULTY_REVERSE = {
+        "FKSiS": "ФКСиС",
+        "FITU": "ФИТУ",
+        "FKP": "ФКП",
+        "FIB": "ФИБ",
+        "IEF": "ИЭФ",
+        "FRE": "ФРЭ",
+}
+
 faculty_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="ФКСиС"), KeyboardButton(text="ФИТУ"), KeyboardButton(text="ФКП")],
@@ -53,6 +79,10 @@ class EditRegistration(StatesGroup):
 # Приветствие только на /start
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    # проверка на личку
+    if message.chat.type != "private":
+        return  
+     
     user = message.from_user
     user_id = user.id
 
@@ -77,6 +107,9 @@ async def cmd_start(message: Message, state: FSMContext):
         "Регистрируясь в боте, вы соглашаетесь на обработку своих персональных данных "
         "(ФИО, номер группы, телефона, студенческого билета и т.д.) в соответствии "
         "с политикой конфиденциальности группы.\n\n"
+        "❗️Данные так же будут использоваться для формирования особождений, премий и "
+        "других докладных записок и документов с вашим участием. По этой причине просим "
+        "вносить правильные данные и в случае их изменений, обновлять их в этом боте.\n\n"
         f"Твой telegram_id: <code>{user_id}</code>\n"
         f"Username: @{user.username or 'нет'}\n"
         f"Статус в базе: {status_emoji} {status_text}\n\n"
@@ -100,6 +133,11 @@ async def cmd_start(message: Message, state: FSMContext):
 # /reg — сразу регистрация
 @router.message(F.text == "/reg")
 async def cmd_reg(message: Message, state: FSMContext):
+
+    # проверка на личку
+    if message.chat.type != "private":
+        return 
+
     user_id = message.from_user.id
     verified = await db.is_user_verified(user_id)
 
@@ -115,6 +153,11 @@ async def cmd_reg(message: Message, state: FSMContext):
 # Статус — 3 строчки
 @router.message(F.text == "Статус")
 async def show_status(message: Message):
+
+    # проверка на личку
+    if message.chat.type != "private":
+        return 
+
     user = message.from_user
     user_id = user.id
 
@@ -133,6 +176,11 @@ async def show_status(message: Message):
 @router.message(F.text == "Обновить данные")
 @router.message(F.text == "/update")
 async def update_data(message: Message, state: FSMContext):
+
+    # проверка на личку
+    if message.chat.type != "private":
+        return 
+
     user_id = message.from_user.id
     verified = await db.is_user_verified(user_id)
 
@@ -174,6 +222,11 @@ async def update_data(message: Message, state: FSMContext):
 # Начать регистрацию (кнопка)
 @router.message(F.text == "Начать регистрацию")
 async def start_registration_button(message: Message, state: FSMContext):
+
+    # проверка на личку
+    if message.chat.type != "private":
+        return 
+
     user_id = message.from_user.id
     verified = await db.is_user_verified(user_id)
 
@@ -189,15 +242,6 @@ async def start_registration_button(message: Message, state: FSMContext):
 # Функция показа меню редактирования
 async def show_edit_menu(message_or_query, state: FSMContext):
     data = await state.get_data()
-
-    FACULTY_REVERSE = {
-        "FKSiS": "ФКСиС",
-        "FITU": "ФИТУ",
-        "FKP": "ФКП",
-        "FIB": "ФИБ",
-        "IEF": "ИЭФ",
-        "FRE": "ФРЭ",
-    }
 
     text = "Что нужно изменить?\n\n"
     fields = [
@@ -221,15 +265,28 @@ async def show_edit_menu(message_or_query, state: FSMContext):
         if field_key == "scholarship":
             value = "Да" if value else "Нет"
 
+        # Подписываем payload
+        payload = f"edit_field_{field_key}"
+        signature = sign_data(payload)
+        signed_data = f"{payload}:{signature}"
+
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
                 text=f"{field_name}: {value}",
-                callback_data=f"edit_field_{field_key}"
+                callback_data=signed_data
             )
         ])
 
+    # Кнопка "Всё верно ✓"
+    payload_confirm = "confirm_registration"
+    signature_confirm = sign_data(payload_confirm)
+    signed_confirm = f"{payload_confirm}:{signature_confirm}"
+
     keyboard.inline_keyboard.append([
-        InlineKeyboardButton(text="Всё верно ✓", callback_data="confirm_registration")
+        InlineKeyboardButton(
+            text="Всё верно ✓",
+            callback_data=signed_confirm
+        )
     ])
 
     await message_or_query.answer(text, reply_markup=keyboard)
@@ -237,9 +294,9 @@ async def show_edit_menu(message_or_query, state: FSMContext):
 
 
 # Запрос нового значения поля (при редактировании)
-@router.callback_query(F.data.startswith("edit_field_"))
 async def process_edit_field(callback: CallbackQuery, state: FSMContext):
-    field = callback.data.replace("edit_field_", "")
+    payload = callback.data.split(':', 1)[0]
+    field = payload.replace("edit_field_", "")
 
     prompts = {
         "full_name": "Введи ФИО полностью:",
@@ -278,15 +335,22 @@ async def process_edit_field(callback: CallbackQuery, state: FSMContext):
 async def process_edit_value(message: Message, state: FSMContext):
     data = await state.get_data()
     field = data.get("editing_field")
+
+    if not message.text:
+        await message.answer("Поле не может быть пустым")
+        return
+
     value = message.text.strip()
 
-    if field == "full_name" and len(value.split()) < 3:
-        await message.answer("Введи ФИО полностью (Пример: Иванова Кира Андреевна)")
-        return
+    if field == "full_name":
+        if len(value) > 150 or len(value.split()) < 3:
+            await message.answer("Введи ФИО полностью (Пример: Иванова Кира Андреевна)")
+            return
 
-    if field == "group_number" and not (value.isdigit() and len(value) == 6):
-        await message.answer("Группа — ровно 6 цифр")
-        return
+    if field == "group_number":
+        if not re.fullmatch(r"\d{6}", value):
+            await message.answer("Группа — ровно 6 цифр")
+            return
 
     if field == "faculty":
         if value not in FACULTIES:
@@ -296,14 +360,15 @@ async def process_edit_value(message: Message, state: FSMContext):
 
     if field == "mobile_number":
         v = value.replace(" ", "").replace("-", "")
-        if not (v.startswith("+") and v[1:].isdigit()):
-            await message.answer("Телефон в формате +375#########")
+        if not re.fullmatch(r"\+375\d{9}", v):
+            await message.answer("Телефон в формате +375XXXXXXXXX")
             return
         value = v
 
-    if field == "stud_number" and not (value.isdigit() and len(value) == 8):
-        await message.answer("Студенческий — 8 цифр")
-        return
+    if field == "stud_number":
+        if not re.fullmatch(r"\d{8}", value):
+            await message.answer("Студенческий — ровно 8 цифр")
+            return
 
     if field == "form_educ":
         if value.lower() not in ("бюджет", "платное"):
@@ -336,7 +401,8 @@ async def process_edit_value(message: Message, state: FSMContext):
 @router.message(Registration.full_name)
 async def process_full_name(message: Message, state: FSMContext):
     full_name = message.text.strip()
-    if len(full_name.split()) < 3:
+
+    if len(full_name) > 150 or len(full_name.split()) < 3:
         await message.answer("Пожалуйста, введи ФИО полностью (Пример: Иванова Кира Андреевна)")
         return
     
@@ -457,35 +523,36 @@ async def process_scholarship(message: Message, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Всё верно ✓", callback_data="confirm_registration"),
-            InlineKeyboardButton(text="Исправить ✗", callback_data="edit_registration")
+            InlineKeyboardButton(text="Всё верно ✓", callback_data=make_signed_callback("confirm_registration")),
+            InlineKeyboardButton(text="Исправить ✗", callback_data=make_signed_callback("edit_registration"))
         ]
     ])
     
     await message.answer(text, reply_markup=keyboard)
     await state.set_state(None)
 
-@router.callback_query(F.data == "edit_registration")
+
 async def process_edit_registration(callback: CallbackQuery, state: FSMContext):
-    # Переходим в режим редактирования
     await state.set_state(EditRegistration.editing)
-
-    # Просто показываем меню редактирования
     await show_edit_menu(callback.message, state)
-
     await callback.answer()
 
 # Подтверждение изменений — сохранение в базу
-@router.callback_query(F.data == "confirm_registration")
 async def process_confirm_registration(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await callback.message.delete()
+    user_id = callback.from_user.id
+
+    already_verified = await db.is_user_verified(user_id)
+
+    await callback.message.delete()  # убираем сообщение с данными и кнопками
 
     data = await state.get_data()
 
-    form_educ_raw = data.get("form_educ", "").strip().lower()
+    # Нормализация формы обучения
+    form_educ_raw = (data.get("form_educ") or "").strip().lower()
     form_educ = "бюджет" if "бюдж" in form_educ_raw else "платное"
 
     try:
+        # 1️⃣ Обновляем данные ВСЕГДА
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE users
@@ -500,7 +567,7 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                     updated_at    = NOW()
                 WHERE telegram_id = $1
             """,
-                callback.from_user.id,
+                user_id,
                 data.get("full_name"),
                 data.get("group_number"),
                 data.get("faculty"),
@@ -510,74 +577,107 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                 data.get("scholarship")
             )
 
-        success = await db.try_complete_verification(db.pool, callback.from_user.id)
+        # 2️⃣ Если пользователь НЕ был верифицирован — завершаем верификацию
+        if not already_verified:
+            success = await db.try_complete_verification(db.pool, user_id)
 
-        if success:
-            # Убираем старую клавиатуру (Да/Нет и т.д.)
-            await callback.message.answer("Регистрация завершена успешно.", reply_markup=ReplyKeyboardRemove()
-            )
+            if not success:
+                await callback.message.answer(
+                    "Не удалось завершить верификацию.\n"
+                    "Проверьте данные или напишите администратору."
+                )
+                await state.clear()
+                await callback.answer()
+                return
 
-            # Пытаемся размутить в группе
+        # 3️⃣ Сообщение об успехе (общее)
+        await callback.message.answer(
+            "Данные успешно сохранены ✅",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        # 4️⃣ Размучиваем ТОЛЬКО при первой регистрации
+        if not already_verified:
             async with db.pool.acquire() as conn:
                 group_id = await conn.fetchval(
                     "SELECT group_id FROM users WHERE telegram_id = $1",
-                    callback.from_user.id
+                    user_id
                 )
 
-            if group_id is None:
-                await callback.message.answer(
-                    "Группа не найдена в базе — попроси админа группы снять ограничения вручную."
-                )
-            else:
+            if group_id:
                 try:
                     from aiogram.types import ChatPermissions
 
-                    full_permissions = ChatPermissions(
+                    permissions = ChatPermissions(
                         can_send_messages=True,
                         can_send_media_messages=True,
                         can_send_polls=True,
                         can_send_other_messages=True,
                         can_add_web_page_previews=True,
-                        can_change_info=False,
-                        can_invite_users=True,
-                        can_pin_messages=False
+                        can_invite_users=True
                     )
 
                     await bot.restrict_chat_member(
                         chat_id=group_id,
-                        user_id=callback.from_user.id,
-                        permissions=full_permissions
-                    )
-
-                    main_menu = ReplyKeyboardMarkup(
-                        keyboard=[
-                            [KeyboardButton(text="Статус"), KeyboardButton(text="Обновить данные")]
-                        ],
-                        resize_keyboard=True,
-                        one_time_keyboard=False
+                        user_id=user_id,
+                        permissions=permissions
                     )
 
                     await callback.message.answer(
-                        "Права в группе восстановлены 👌\n",reply_markup=main_menu
+                        "Права в группе полностью восстановлены ✅"
                     )
+
                 except Exception as e:
-                    print(f"Ошибка при размутывании: {e}")
+                    print(f"Ошибка размутывания: {e}")
                     await callback.message.answer(
-                        f"Не удалось автоматически снять ограничения: {str(e)}\n"
-                        "Попроси админа группы сделать это вручную."
+                        "Не удалось автоматически снять ограничения.\n"
+                        "Попроси администратора сделать это вручную."
                     )
 
-            # Главное меню
-            keyboard = ReplyKeyboardMarkup(
-                keyboard=[
-                    [KeyboardButton(text="Статус"), KeyboardButton(text="Обновить данные")]
-                ],
-                resize_keyboard=True,
-                one_time_keyboard=False
-            )
+        # 5️⃣ Главное меню
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Статус"), KeyboardButton(text="Обновить данные")]
+            ],
+            resize_keyboard=True
+        )
+
+        await callback.message.answer("Меню:", reply_markup=keyboard)
+
     except Exception as e:
-        print(f"Ошибка обновления: {e}")
-        await callback.message.answer("Ошибка при сохранении. Попробуйте заново (/start)")
+        print(f"Ошибка при подтверждении регистрации: {e}")
+        await callback.message.answer(
+            "Произошла ошибка при сохранении данных. Попробуйте заново (/start)"
+        )
 
     await state.clear()
     await callback.answer()
+
+@router.callback_query()
+async def secure_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    cb_data = callback.data
+
+    if ':' not in cb_data:
+        await callback.answer("Неверный запрос", show_alert=True)
+        return
+
+    payload, signature = cb_data.rsplit(':', 1)
+
+    if not is_valid_signature(payload, signature):
+        await callback.answer("Подпись не совпадает! Действие отклонено.", show_alert=True)
+        return
+
+    # Всё безопасно — вызываем нужную функцию
+    if payload == "confirm_registration":
+        await process_confirm_registration(callback, state, bot)
+
+    elif payload.startswith("edit_field_"):
+        field = payload.replace("edit_field_", "")
+        await process_edit_field(callback, state)
+
+    elif payload == "edit_registration":
+        await process_edit_registration(callback, state)
+        
+    else:
+        await callback.answer("Неизвестная команда", show_alert=True)
+    

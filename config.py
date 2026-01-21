@@ -5,6 +5,8 @@ load_dotenv()  # загружает переменные из .env в os.environ
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+CALLBACK_SECRET = os.getenv("CALLBACK_SECRET")
+
 SUPABASE = {
     "host": os.getenv("SUPABASE_HOST"),
     "port": int(os.getenv("SUPABASE_PORT", 5432)),
