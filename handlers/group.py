@@ -1,5 +1,6 @@
 # group.py
 
+import os
 from aiogram import F, Router, Bot
 from aiogram.types import ChatMemberUpdated, Message
 from aiogram.filters import ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
@@ -25,7 +26,12 @@ keyboard = InlineKeyboardMarkup(inline_keyboard=[
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=(IS_NOT_MEMBER >> IS_MEMBER)))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     user = event.new_chat_member.user
-    log_action("Пользователь зашёл в группу", user, f"chat_id={event.chat.id}")
+    log_action(
+        "Пользователь зашёл в группу",
+        user,
+        handler="group_join",
+        extra=f"chat_id={event.chat.id}"
+    )
     chat_id = event.chat.id
    
 
@@ -76,9 +82,11 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
         reply_markup=keyboard,
         parse_mode="HTML"
     )
+    
+SUPER_ADMIN_ID = os.getenv("SUPER_ADMIN_ID")
+ROOT_ID = os.getenv("ROOT_ID")
 
-SUPER_ADMIN_ID = 8350043917
-ROOT_ID = 8350043917
+
 
 import asyncio
 from aiogram.types import Message, ChatPermissions

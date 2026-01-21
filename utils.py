@@ -1,46 +1,90 @@
-# utils.p
+# utils.py
 import logging
-
-# Чтобы видеть username в логах
-def get_user_info(user) -> str:
-    username = user.username if user.username else f"ID{user.id}"
-    first_name = user.first_name or ""
-    return f"{first_name} (@{username})"
-
 from datetime import datetime
 
-# Настраиваем логгер один раз
+# ================= LOGGER =================
+
 logger = logging.getLogger("bot_actions")
 logger.setLevel(logging.INFO)
 
-# Формат логов — красивый и читаемый
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter(
-    '%(asctime)s | %(levelname)-8s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-))
-logger.addHandler(handler)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
 
-def log_action(action: str, user=None, extra: str = "", level="INFO"):
-    """
-    Красиво логирует действие бота
-    Пример: log_action("Регистрация завершена", user, "права восстановлены")
-    """
-    user_info = ""
+
+# ================= HELPERS =================
+
+def get_user_info(user) -> str:
+    if not user:
+        return "SYSTEM"
+    username = f"@{user.username}" if user.username else f"ID{user.id}"
+    name = user.first_name or "Без имени"
+    return f"{name} ({username})"
+
+
+def log_action(
+    action: str,
+    user=None,
+    handler: str | None = None,
+    extra: str | None = None,
+    *,
+    level: str = "INFO"
+):
+    
+
+    parts = [action]
+
     if user:
-        username = user.username if user.username else f"ID{user.id}"
-        first_name = user.first_name or "Без имени"
-        user_info = f"{first_name} (@{username})"
+        parts.append(get_user_info(user))
 
-    message = f"{action}"
-    if user_info:
-        message += f" | {user_info}"
+    if handler:
+        parts.append(handler)
+
     if extra:
-        message += f" | {extra}"
+        parts.append(extra)
 
-    if level.upper() == "INFO":
-        logger.info(message)
-    elif level.upper() == "WARNING":
+    message = " | ".join(parts)
+
+    level = level.upper()
+    if level == "WARNING":
         logger.warning(message)
-    elif level.upper() == "ERROR":
+    elif level == "ERROR":
         logger.error(message)
+    else:
+        logger.info(message)
+
+
+
+from aiogram.fsm.context import FSMContext
+
+
+
+async def log_fsm(
+    state: FSMContext,
+    user,
+    to_state: str | None,
+    reason: str = ""
+):
+    """
+    Лог FSM переходов в одну строку
+    """
+    from_state = await state.get_state()
+    from_state = from_state or "None"
+    to_state = to_state or "None"
+
+    extra = f"{from_state} → {to_state}"
+    if reason:
+        extra += f" | {reason}"
+
+    log_action(
+        action="FSM",
+        user=user,
+        handler="transition",
+        extra=extra
+    )

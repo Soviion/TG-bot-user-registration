@@ -13,12 +13,12 @@ from db import try_complete_verification, pool, is_user_verified
 import hmac
 import hashlib
 
-from utils import get_user_info, log_action
+from utils import get_user_info, log_action, log_fsm
 
 
 def sign_data(data: str) -> str:
     h = hmac.new(config.CALLBACK_SECRET.encode(), data.encode(), hashlib.sha256)
-    return h.hexdigest()[:12]  # 12 символов достаточно для защиты
+    return h.hexdigest()[:20]  # 12 символов достаточно для защиты
 
 
 def is_valid_signature(payload: str, signature: str) -> bool:
@@ -77,7 +77,9 @@ faculty_kb = ReplyKeyboardMarkup(
 
 
 class EditRegistration(StatesGroup):
+    menu = State()
     editing = State()
+    
 
 
 # Приветствие только на /start
@@ -90,6 +92,8 @@ async def cmd_start(message: Message, state: FSMContext):
     user = message.from_user
     log_action("Запуск /start", user)  # ← лог
     user_id = user.id
+    
+    await log_fsm(state, user, None, "start command")
     await state.clear()
 
     async with db.pool.acquire() as conn:
@@ -152,6 +156,7 @@ async def cmd_reg(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("Отлично! Начинаем регистрацию.\n\nВведи своё ФИО полностью (Пример - Иванова Кира Андреевна):")
+    await log_fsm(state, message.from_user, Registration.full_name, "start registration")
     await state.set_state(Registration.full_name)
 
 
@@ -241,6 +246,7 @@ async def start_registration_button(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("Отлично! Начинаем регистрацию.\n\nВведи своё ФИО полностью:")
+    await log_fsm(state, message.from_user, Registration.full_name, "start registration")
     await state.set_state(Registration.full_name)
 
 
@@ -270,35 +276,30 @@ async def show_edit_menu(message_or_query, state: FSMContext):
         if field_key == "scholarship":
             value = "Да" if value else "Нет"
 
-        # Подписываем payload
         payload = f"edit_field_{field_key}"
         signature = sign_data(payload)
         signed_data = f"{payload}:{signature}"
 
-        keyboard.inline_keyboard.append([
-            InlineKeyboardButton(
-                text=f"{field_name}: {value}",
-                callback_data=signed_data
-            )
-        ])
+        keyboard.inline_keyboard.append([InlineKeyboardButton(
+            text=f"{field_name}: {value}",
+            callback_data=signed_data
+        )])
 
-    # Кнопка "Всё верно ✓"
+    # Кнопка подтверждения
     payload_confirm = "confirm_registration"
     signature_confirm = sign_data(payload_confirm)
     signed_confirm = f"{payload_confirm}:{signature_confirm}"
-
-    keyboard.inline_keyboard.append([
-        InlineKeyboardButton(
-            text="Всё верно ✓",
-            callback_data=signed_confirm
-        )
-    ])
+    keyboard.inline_keyboard.append([InlineKeyboardButton(
+        text="Всё верно ✓",
+        callback_data=signed_confirm
+    )])
 
     await message_or_query.answer(text, reply_markup=keyboard)
+    # Состояние меню
+    await state.set_state(EditRegistration.menu)
 
 
-
-# Запрос нового значения поля (при редактировании)
+# Обработка нажатия на поле для редактирования
 async def process_edit_field(callback: CallbackQuery, state: FSMContext):
     payload = callback.data.split(':', 1)[0]
     field = payload.replace("edit_field_", "")
@@ -314,7 +315,9 @@ async def process_edit_field(callback: CallbackQuery, state: FSMContext):
     }
 
     kb = None
-    if field == "form_educ":
+    if field == "faculty":
+        kb = faculty_kb
+    elif field == "form_educ":
         kb = ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="Бюджет"), KeyboardButton(text="Платное")]],
             resize_keyboard=True,
@@ -326,79 +329,71 @@ async def process_edit_field(callback: CallbackQuery, state: FSMContext):
             resize_keyboard=True,
             one_time_keyboard=True
         )
-    elif field == "faculty":
-        kb = faculty_kb
 
-    await state.set_state(EditRegistration.editing)
+    # Сохраняем, что сейчас редактируем это поле
     await state.update_data(editing_field=field)
+    # Ставим состояние ввода
+    await state.set_state(EditRegistration.editing)
 
     await callback.message.answer(prompts[field], reply_markup=kb)
     await callback.answer()
 
 
+# Обработка ввода нового значения пользователем
 @router.message(EditRegistration.editing)
 async def process_edit_value(message: Message, state: FSMContext):
     data = await state.get_data()
     field = data.get("editing_field")
 
-    if not message.text:
-        await message.answer("Поле не может быть пустым")
+    if not field:
+        await message.answer("Произошла ошибка. Попробуй заново /update")
+        await state.set_state(EditRegistration.menu)
+        await show_edit_menu(message, state)
         return
 
     value = message.text.strip()
 
+    # Валидация
     if field == "full_name":
-        if len(value) > 150 or len(value.split()) < 3:
+        if len(value.split()) < 3:
             await message.answer("Введи ФИО полностью (Пример: Иванова Кира Андреевна)")
             return
-
-    if field == "group_number":
+    elif field == "group_number":
         if not re.fullmatch(r"\d{6}", value):
             await message.answer("Группа — ровно 6 цифр")
             return
-
-    if field == "faculty":
+    elif field == "faculty":
         if value not in FACULTIES:
             await message.answer("Выбери факультет с кнопок 👇")
             return
         value = FACULTIES[value]
-
-    if field == "mobile_number":
+    elif field == "mobile_number":
         v = value.replace(" ", "").replace("-", "")
         if not re.fullmatch(r"\+375\d{9}", v):
             await message.answer("Телефон в формате +375XXXXXXXXX")
             return
         value = v
-
-    if field == "stud_number":
+    elif field == "stud_number":
         if not re.fullmatch(r"\d{8}", value):
             await message.answer("Студенческий — ровно 8 цифр")
             return
-
-    if field == "form_educ":
+    elif field == "form_educ":
         if value.lower() not in ("бюджет", "платное"):
             await message.answer("Только Бюджет или Платное")
             return
         value = value.lower()
-
-    if field == "scholarship":
+    elif field == "scholarship":
         if value.lower() not in ("да", "нет"):
             await message.answer("Ответь Да или Нет")
             return
         value = value.lower() == "да"
 
+    # Сохраняем новое значение
     await state.update_data({field: value})
-    await state.set_state(None)
 
-    main_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Статус"), KeyboardButton(text="Обновить данные")]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
-
-    await message.answer("Поле обновлено ✅", reply_markup=main_menu)
+    # Возвращаем FSM в меню и показываем его
+    await state.set_state(EditRegistration.menu)
+    await message.answer("Поле обновлено ✅", reply_markup=ReplyKeyboardRemove())
     await show_edit_menu(message, state)
 
 
@@ -408,11 +403,26 @@ async def process_full_name(message: Message, state: FSMContext):
     full_name = message.text.strip()
 
     if len(full_name) > 150 or len(full_name.split()) < 3:
+        
         await message.answer("Пожалуйста, введи ФИО полностью (Пример: Иванова Кира Андреевна)")
+        log_action(
+            "FSM invalid input",
+            message.from_user,
+            handler="Registration.full_name",
+            extra=f"value={message.text}",
+            level="WARNING"
+        )
         return
     
+
     await state.update_data(full_name=full_name)
     await message.answer("Отлично!\nТеперь введи номер группы (ровно 6 цифр)")
+    await log_fsm(
+        state,
+        message.from_user,
+        Registration.group_number,
+        "full_name accepted"
+    )
     await state.set_state(Registration.group_number)
 
 
@@ -420,13 +430,27 @@ async def process_full_name(message: Message, state: FSMContext):
 async def process_group_number(message: Message, state: FSMContext):
     group = message.text.strip()
     if not (group.isdigit() and len(group) == 6):
+        log_action(
+            "FSM invalid input",
+            message.from_user,
+            handler="Registration.group_number",
+            extra=f"value={message.text}",
+            level="WARNING"
+        )
         await message.answer("Номер группы должен состоять ровно из 6 цифр")
         return
     
+
     await state.update_data(group_number=group)
     await message.answer(
         "Выбери свой факультет:",
         reply_markup=faculty_kb
+    )
+    await log_fsm(
+        state,
+        message.from_user,
+        Registration.faculty,
+        "group_number accepted"
     )
     await state.set_state(Registration.faculty)
 
@@ -454,6 +478,13 @@ async def process_faculty(message: Message, state: FSMContext):
 async def process_mobile(message: Message, state: FSMContext):
     phone = message.text.strip().replace(" ", "").replace("-", "")
     if not (phone.startswith("+") and 10 <= len(phone) <= 13 and phone[1:].isdigit()):
+        log_action(
+            "FSM invalid input",
+            message.from_user,
+            handler="Registration.mobile_number",
+            extra=f"value={message.text}",
+            level="WARNING"
+        )
         await message.answer("Номер телефона введён некорректно. Пример: +375#########")
         return
     
@@ -466,6 +497,13 @@ async def process_mobile(message: Message, state: FSMContext):
 async def process_stud_number(message: Message, state: FSMContext):
     num = message.text.strip()
     if not (num.isdigit() and len(num) == 8):
+        log_action(
+            "FSM invalid input",
+            message.from_user,
+            handler="Registration.stud_number",
+            extra=f"value={message.text}",
+            level="WARNING"
+        )
         await message.answer("Номер студенческого должен состоять из 8 цифр")
         return
     
@@ -534,11 +572,16 @@ async def process_scholarship(message: Message, state: FSMContext):
     ])
     
     await message.answer(text, reply_markup=keyboard)
-    await state.set_state(None)
-
+    await log_fsm(
+        state,
+        message.from_user,
+        None,
+        "registration data collected"
+    )
+    await state.set_state(Registration.confirm)
 
 async def process_edit_registration(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(EditRegistration.editing)
+    await state.set_state(EditRegistration.menu)  # ✅ меню
     await show_edit_menu(callback.message, state)
     await callback.answer()
 
@@ -546,9 +589,18 @@ async def process_edit_registration(callback: CallbackQuery, state: FSMContext):
 async def process_confirm_registration(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user = callback.from_user
     user_id = user.id
+    log_action(
+        "FSM confirm start",
+        user,
+        handler="confirm_registration"
+    )
     user_info = get_user_info(user)  # из utils.py
 
-    log_action("Начало подтверждения данных", user)
+    log_action(
+        "Начало подтверждения данных",
+        user,
+        handler="confirm_registration"
+    )
 
     already_verified = await db.is_user_verified(user_id)
 
@@ -562,7 +614,11 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
 
     try:
         # 1. Обновляем данные ВСЕГДА (даже если уже верифицирован)
-        log_action("Обновление пользовательских данных", user)
+        log_action(
+            "Обновление пользовательских данных",
+            user,
+            handler="confirm_registration"
+        )
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE users
@@ -602,7 +658,11 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                 await callback.answer()
                 return
 
-            log_action("Верификация успешно завершена", user)
+            log_action(
+                "Верификация успешно завершена",
+                user,
+                handler="confirm_registration"
+            )
 
         # 3. Общее сообщение об успехе
         await callback.message.answer(
@@ -663,24 +723,52 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
         )
 
         await callback.message.answer("Меню:", reply_markup=keyboard)
-        log_action("Показан главный меню", user)
+        log_action(
+            "Показан главный меню",
+            user,
+            handler="main_menu"
+        )
 
     except Exception as e:
-        log_action("Критическая ошибка при подтверждении", user, str(e), "ERROR")
+        log_action(
+            action="Ошибка при подтверждении регистрации",
+            user=user,
+            handler="confirm_registration",
+            extra=str(e),
+            level="ERROR"
+        )
         await callback.message.answer(
             "Произошла ошибка при сохранении данных. Попробуйте заново (/start)"
         )
 
+    await log_fsm(
+        state,
+        user,
+        None,
+        "registration finished"
+    )
     await state.clear()
     await callback.answer()
 
+ALLOWED_EDIT_FIELDS = {
+    "full_name",
+    "group_number",
+    "faculty",
+    "form_educ",
+    "scholarship",
+}
 
 @router.callback_query()
 async def secure_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user = callback.from_user
     cb_data = callback.data
 
-    log_action("Callback получен", user, f"data: {cb_data}")
+    log_action(
+        "Callback получен",
+        user,
+        handler="secure_callback",
+        extra=cb_data
+    )
 
     if ':' not in cb_data:
         log_action("Неверный callback (без подписи)", user, cb_data, "WARNING")
@@ -690,20 +778,85 @@ async def secure_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
     payload, signature = cb_data.rsplit(':', 1)
 
     if not is_valid_signature(payload, signature):
-        log_action("Неверная подпись", user, cb_data, "WARNING")
+        log_action(
+            "Неверная подпись",
+            user,
+            handler=payload,
+            level="WARNING"
+        )
         await callback.answer("Подпись не совпадает!", show_alert=True)
         return
 
-    log_action("Подпись OK", user, payload)
+    log_action(
+        "Подпись OK",
+        user,
+        handler=payload
+    )
 
+    # ✅ Подтверждение регистрации
     if payload == "confirm_registration":
-        log_action("Подтверждение регистрации", user)
+        current_state = await state.get_state()
+        # Разрешаем как из финального шага Registration.confirm,
+        # так и если пользователь редактировал данные (EditRegistration.menu)
+        if current_state not in [Registration.confirm, EditRegistration.menu]:
+            await callback.answer("Эта кнопка больше не активна", show_alert=True)
+            return
+
+        log_action(
+            action="Подтверждение регистрации",
+            user=user,
+            handler="confirm_registration"
+        )
         await process_confirm_registration(callback, state, bot)
+
+    # Редактирование всей регистрации
+    elif payload == "edit_registration":
+        log_action(
+            action="Редактирование регистрации",
+            user=user,
+            handler="edit_registration"
+        )
+        await process_edit_registration(callback, state)
+
+    # Редактирование отдельного поля
     elif payload.startswith("edit_field_"):
         field = payload.replace("edit_field_", "")
-        log_action(f"Редактирование поля {field}", user)
+
+        if field not in ALLOWED_EDIT_FIELDS:
+            log_action(
+                action="Попытка редактировать запрещённое поле",
+                user=user,
+                handler=field,
+                level="WARNING"
+            )
+            await callback.answer("Недопустимое поле", show_alert=True)
+            return
+
+        # Разрешаем редактировать поле если пользователь в меню редактирования
+        current_state = await state.get_state()
+        if current_state not in [EditRegistration.menu, Registration.confirm]:
+            log_action(
+                action="Попытка редактировать вне меню",
+                user=user,
+                handler=field,
+                level="WARNING"
+            )
+            await callback.answer("Эта кнопка больше не активна", show_alert=True)
+            return
+
+        log_action(
+            action="Редактирование поля",
+            user=user,
+            handler=field
+        )
         await process_edit_field(callback, state)
+
     else:
-        log_action("Неизвестный callback", user, payload, "WARNING")
+        log_action(
+            action="Неизвестный callback",
+            user=user,
+            handler=payload,
+            level="WARNING"
+        )
         await callback.answer("Неизвестная команда", show_alert=True)
     

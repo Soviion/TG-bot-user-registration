@@ -35,6 +35,9 @@ async def main():
         await db.init_pool()
         logger.info("Подключение к базе данных установлено")
         logger.info("Бот запускается...")
+        logging.getLogger("aiogram").setLevel(logging.WARNING)
+        logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+        
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     
     except KeyboardInterrupt:
