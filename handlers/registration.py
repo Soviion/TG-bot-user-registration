@@ -646,7 +646,7 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
         # 2. Если пользователь ещё НЕ верифицирован — завершаем верификацию
         if not already_verified:
             log_action("Попытка верификации (первый раз)", user)
-            success = await db.try_complete_verification(db.pool, user_id)
+            success = await db.try_complete_verification(user_id)
 
             if not success:
                 log_action("Верификация НЕ удалась", user, "поля не заполнены", "ERROR")
@@ -754,6 +754,8 @@ ALLOWED_EDIT_FIELDS = {
     "full_name",
     "group_number",
     "faculty",
+    "mobile_number",
+    "stud_number",
     "form_educ",
     "scholarship",
 }

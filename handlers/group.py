@@ -34,11 +34,6 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     )
     chat_id = event.chat.id
    
-
-    # Самое важное — создаём запись в базе, если её ещё нет
-    if db.pool is None:
-        await db.init_pool()  # на всякий случай, если пул не инициализирован
-    
     async with db.pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO users (telegram_id, username, is_verified, group_id, scholarship, created_at)
@@ -83,13 +78,14 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
         parse_mode="HTML"
     )
     
-SUPER_ADMIN_ID = os.getenv("SUPER_ADMIN_ID")
-ROOT_ID = os.getenv("ROOT_ID")
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID"))
+ROOT_ID = int(os.getenv("ROOT_ID"))
 
 
 
 import asyncio
 from aiogram.types import Message, ChatPermissions
+
 
 async def is_bot_admin(user_id: int) -> bool:
     if user_id == SUPER_ADMIN_ID:
@@ -123,8 +119,20 @@ async def admin_only(message: Message) -> bool:
     return True
 
 # ===================== КОМАНДЫ =====================
+from aiogram.types import User
+
+async def get_target_username(user: User | None) -> str | None:
+    if user is None:
+        return None
+
+    if user.username:
+        return f"@{user.username}"
+
+    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    return name or None
 
 # /kick
+from admin_logger import log_admin_action
 @router.message(F.text == "/kick")
 async def cmd_kick(message: Message, bot: Bot):
 
@@ -135,9 +143,24 @@ async def cmd_kick(message: Message, bot: Bot):
         return
     user_id = message.reply_to_message.from_user.id
     chat_id = message.chat.id
+    target = message.reply_to_message.from_user
+
     await bot.ban_chat_member(chat_id, user_id)
     await bot.unban_chat_member(chat_id, user_id)
-    await send_temp_message(message, "👢 Пользователь кикнут.")
+
+    username = await get_target_username(target)
+    await send_temp_message(message, f"👢 Пользователь {username} кикнут.")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{now} | INFO | /kick выполнен | {message.from_user.first_name} (@{message.from_user.username}) | target={username} | chat_id={chat_id}")
+
+    await log_admin_action(
+        admin_id=message.from_user.id,
+        action="kick",
+        target_id=target.id,
+        target_username=await get_target_username(target),
+        details=f"chat_id={message.chat.id}"
+    )
 
 # /mute24
 @router.message(F.text == "/mute")
@@ -273,6 +296,7 @@ async def cmd_help(message: Message):
             "/up — выдать права без регистрации\n"
             "/addadmin — добавить админа бота\n"
             "/deladmin — удалить админа бота\n"
+            "/reg_mode on/off - режим контроля регистрации\n"
             "/help — показать это сообщение"
         )
         await send_temp_message(message, help_text)

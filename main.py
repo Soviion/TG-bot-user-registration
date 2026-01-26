@@ -16,6 +16,7 @@ import config
 import db
 from handlers import group
 from handlers import registration  
+from handlers import reg_mode
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(group.router)
     dp.include_router(registration.router)
+    dp.include_router(reg_mode.router)
  
 
     try:

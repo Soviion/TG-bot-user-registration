@@ -4,8 +4,9 @@ import os
 load_dotenv()  # загружает переменные из .env в os.environ
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
+BOT_USERNAME = "register_yivrbot"
 CALLBACK_SECRET = os.getenv("CALLBACK_SECRET")
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID"))
 
 SUPABASE = {
     "host": os.getenv("SUPABASE_HOST"),
