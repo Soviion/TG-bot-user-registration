@@ -20,8 +20,11 @@ async def init_pool():
             host=config.SUPABASE["host"],
             port=config.SUPABASE["port"],
             ssl="require",
-            min_size=1,
-            max_size=1,
+            min_size=5,
+            max_size=20,
+            timeout=15,
+            command_timeout=10,  # если запрос >10 сек — ошибка вместо зависания
+            server_settings={'statement_timeout': '10000'},  # 10 сек на стороне Postgres
         )
         logger.info("✅ Пул подключений к базе создан")
     except Exception as e:
