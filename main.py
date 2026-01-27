@@ -3,7 +3,6 @@ import logging
 import sys
 import os
 
-from flask import app
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
