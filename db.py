@@ -1,3 +1,4 @@
+import asyncio
 import asyncpg
 from typing import Any, List, Optional
 import config
@@ -29,7 +30,6 @@ async def init_pool():
             command_timeout=10,  # если запрос >10 сек — ошибка вместо зависания
             server_settings={'statement_timeout': '10000'},  # 10 сек на стороне Postgres
             statement_cache_size=0,
-            prepared_statement_cache=0,
         )
         logger.info(
             f"Пул создан успешно | host={config.SUPABASE['host']}, "
@@ -44,8 +44,16 @@ async def init_pool():
 async def close_pool():
     global pool
     if pool:
-        await pool.close()
-        pool = None
+        try:
+            # Ждём максимум 10 секунд
+            await asyncio.wait_for(pool.close(), timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("Закрытие пула заняло >10 сек → принудительно завершаем")
+            pool.terminate()  # жёсткое закрытие
+        except Exception as e:
+            logger.error(f"Ошибка закрытия пула: {e}")
+        finally:
+            pool = None
         logger.info("Пул базы данных закрыт")
 
 
