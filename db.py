@@ -26,7 +26,7 @@ async def init_pool():
             command_timeout=10,  # если запрос >10 сек — ошибка вместо зависания
             server_settings={'statement_timeout': '10000'},  # 10 сек на стороне Postgres
         )
-        logger.info("✅ Пул подключений к базе создан")
+        logger.info(f"Пул создан с параметрами: host={config.SUPABASE['host']}, port={config.SUPABASE['port']}, min_size={pool.min_size}, max_size={pool.max_size}")
     except Exception as e:
         logger.exception("❌ Ошибка подключения к базе")
         raise e
