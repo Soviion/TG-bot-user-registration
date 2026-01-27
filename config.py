@@ -9,15 +9,15 @@ CALLBACK_SECRET = os.getenv("CALLBACK_SECRET")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8350043917"))
 ROOT_ID = int(os.getenv("ROOT_ID", "8350043917"))
 
-SUPABASE = {
-    "host": os.getenv("SUPABASE_HOST"),
-    "port": int(os.getenv("SUPABASE_PORT", 5432)),
-    "database": os.getenv("SUPABASE_DB", "postgres"),
-    "user": os.getenv("SUPABASE_USER"),
-    "password": os.getenv("SUPABASE_PASSWORD"),
+DATABASE = {
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT"),
+    "database": os.getenv("DB_DB", "postgres"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
 }
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден в .env файле")
-if not all(SUPABASE.values()):
+if not all(DATABASE.values()):
     raise ValueError("Не все Supabase credentials найдены в .env")

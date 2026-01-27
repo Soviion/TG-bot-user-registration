@@ -18,12 +18,11 @@ async def init_pool():
         max_size = 20
 
         pool = await asyncpg.create_pool(
-            user=config.SUPABASE["user"],
-            password=config.SUPABASE["password"],
-            database=config.SUPABASE["database"],
-            host=config.SUPABASE["host"],
-            port=config.SUPABASE["port"],
-            ssl="require",
+            user=config.DATABASE["user"],
+            password=config.DATABASE["password"],
+            database=config.DATABASE["database"],
+            host=config.DATABASE["host"],
+            port=config.DATABASE["port"],
             min_size=min_size,
             max_size=max_size,
             timeout=15,
@@ -32,8 +31,8 @@ async def init_pool():
             statement_cache_size=0,
         )
         logger.info(
-            f"Пул создан успешно | host={config.SUPABASE['host']}, "
-            f"port={config.SUPABASE['port']}, min_size={min_size}, max_size={max_size}, "
+            f"Пул создан успешно | host={config.DATABASE['host']}, "
+            f"port={config.DATABASE['port']}, min_size={min_size}, max_size={max_size}, "
             f"statement_cache_size=0 (prepared statements отключены)"
         )
     except Exception as e:
