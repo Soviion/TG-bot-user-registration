@@ -21,7 +21,7 @@ async def init_pool():
             port=config.SUPABASE["port"],
             ssl="require",
             min_size=1,
-            max_size=10,
+            max_size=5,
         )
         logger.info("✅ Пул подключений к базе создан")
     except Exception as e:
