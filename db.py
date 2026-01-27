@@ -29,6 +29,7 @@ async def init_pool():
             command_timeout=10,  # если запрос >10 сек — ошибка вместо зависания
             server_settings={'statement_timeout': '10000'},  # 10 сек на стороне Postgres
             statement_cache_size=0,
+            prepared_statement_cache=0,
         )
         logger.info(
             f"Пул создан успешно | host={config.SUPABASE['host']}, "
