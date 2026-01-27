@@ -13,6 +13,9 @@ async def init_pool():
     if pool:
         return
     try:
+        min_size = 5
+        max_size = 20
+
         pool = await asyncpg.create_pool(
             user=config.SUPABASE["user"],
             password=config.SUPABASE["password"],
@@ -20,13 +23,16 @@ async def init_pool():
             host=config.SUPABASE["host"],
             port=config.SUPABASE["port"],
             ssl="require",
-            min_size=5,
-            max_size=20,
+            min_size=min_size,
+            max_size=max_size,
             timeout=15,
             command_timeout=10,  # если запрос >10 сек — ошибка вместо зависания
             server_settings={'statement_timeout': '10000'},  # 10 сек на стороне Postgres
         )
-        logger.info(f"Пул создан с параметрами: host={config.SUPABASE['host']}, port={config.SUPABASE['port']}, min_size={pool.min_size}, max_size={pool.max_size}")
+        logger.info(
+            f"Пул создан успешно | host={config.SUPABASE['host']}, "
+            f"port={config.SUPABASE['port']}, min_size={min_size}, max_size={max_size}"
+        )
     except Exception as e:
         logger.exception("❌ Ошибка подключения к базе")
         raise e
