@@ -1,12 +1,13 @@
 from dotenv import load_dotenv
 import os
 
-load_dotenv()  # загружает переменные из .env в os.environ
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_USERNAME = "register_yivrbot"
 CALLBACK_SECRET = os.getenv("CALLBACK_SECRET")
-SUPER_ADMIN_ID = 8350043917
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8350043917"))
+ROOT_ID = int(os.getenv("ROOT_ID", "8350043917"))
 
 SUPABASE = {
     "host": os.getenv("SUPABASE_HOST"),
@@ -16,7 +17,6 @@ SUPABASE = {
     "password": os.getenv("SUPABASE_PASSWORD"),
 }
 
-# Проверяем, что ничего не потеряли
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден в .env файле")
 if not all(SUPABASE.values()):

@@ -4,18 +4,15 @@ from aiogram.types import Message, ChatPermissions
 from utils import log_action
 import db
 import config
-
-from admin_logger import log_admin_action
+from handlers.admin_logger import log_admin_action
 
 router = Router(name="reg_mode")
 
 # 🔴 глобальный флаг
 REG_MODE_ENABLED = False
 
-
 def is_super_admin(user_id: int) -> bool:
     return user_id == config.SUPER_ADMIN_ID
-
 
 # =====================
 # /reg_mode on|off
@@ -26,8 +23,8 @@ async def cmd_reg_mode(message: Message):
 
     if message.chat.type not in ("group", "supergroup"):
         return
-
     if not is_super_admin(message.from_user.id):
+        await message.answer("⛔ Только супер админ может изменять режим регистрации")
         return
 
     parts = message.text.split()
@@ -47,13 +44,13 @@ async def cmd_reg_mode(message: Message):
     await message.answer(
         f"🛡 Режим регистрации: {'ВКЛЮЧЕН' if REG_MODE_ENABLED else 'ВЫКЛЮЧЕН'}"
     )
+
     await log_admin_action(
         admin_id=message.from_user.id,
         admin_username=message.from_user.username,
         action=f"reg_mode_change: mode={'ON' if REG_MODE_ENABLED else 'OFF'}",
         chat_id=message.chat.id
     )
-
 
 # =====================
 # ЛОВУШКА СООБЩЕНИЙ
@@ -63,7 +60,6 @@ async def reg_mode_guard(message: Message, bot: Bot):
     if not REG_MODE_ENABLED:
         return
 
-    # ❗ не трогаем бота
     if message.from_user.is_bot:
         return
 
@@ -71,14 +67,11 @@ async def reg_mode_guard(message: Message, bot: Bot):
     user_id = user.id
     chat_id = message.chat.id
 
-    # админов и суперадмина не трогаем
     if is_super_admin(user_id):
         return
-
     if await db.is_user_verified(user_id):
         return
 
-    # 🪵 лог
     log_action(
         action="REG_MODE: сообщение заблокировано",
         user=user,
@@ -86,13 +79,11 @@ async def reg_mode_guard(message: Message, bot: Bot):
         extra=f"chat_id={chat_id}"
     )
 
-    # ❌ удаляем сообщение пользователя
     try:
         await message.delete()
     except:
         pass
 
-    # 🔇 мутим
     try:
         await bot.restrict_chat_member(
             chat_id=chat_id,
@@ -108,7 +99,6 @@ async def reg_mode_guard(message: Message, bot: Bot):
             level="ERROR"
         )
 
-    # 🤖 сообщение от бота (НЕ удаляем)
     mention = f"@{user.username}" if user.username else user.full_name
     try:
         await bot.send_message(

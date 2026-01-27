@@ -1,3 +1,4 @@
 .env
 tg_bot.sql
 requirements.txt
+pg.session.sql

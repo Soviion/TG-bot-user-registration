@@ -1,40 +1,49 @@
 # group.py
-
 import os
-from aiogram import F, Router, Bot
-from aiogram.types import ChatMemberUpdated, Message
-from aiogram.filters import ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
+import asyncio
 from datetime import datetime, timedelta
 import pytz
 
+from aiogram import F, Router, Bot
+from aiogram.filters import Command, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
+from aiogram.types import (
+    ChatMemberUpdated, Message, ChatPermissions,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 
 import db
 from utils import log_action
+from handlers.admin_logger import log_admin_action
 
 router = Router(name="group_events")
+SUPER_ADMIN_ID = 8350043917
 
+# Временная зона Минск
 minsk_tz = pytz.timezone("Europe/Minsk")
-now_minsk = datetime.now(minsk_tz).replace(tzinfo=None)
-
 
 keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Перейти к боту", url="https://t.me/register_yivrbot")]
 ])
 
+SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID"))
+ROOT_ID = int(os.getenv("ROOT_ID"))
+
+# ====================== Событие входа пользователя ======================
 @router.chat_member(ChatMemberUpdatedFilter(member_status_changed=(IS_NOT_MEMBER >> IS_MEMBER)))
 async def on_user_join(event: ChatMemberUpdated, bot: Bot):
     user = event.new_chat_member.user
+    chat_id = event.chat.id
+
     log_action(
         "Пользователь зашёл в группу",
         user,
         handler="group_join",
-        extra=f"chat_id={event.chat.id}"
+        extra=f"chat_id={chat_id}"
     )
-    chat_id = event.chat.id
-   
-    async with db.pool.acquire() as conn:
+
+    now_minsk = datetime.now(minsk_tz).replace(tzinfo=None)
+
+    async with db.get_pool().acquire() as conn:
         await conn.execute("""
             INSERT INTO users (telegram_id, username, is_verified, group_id, scholarship, created_at)
             VALUES ($1, $2, FALSE, $3, FALSE, $4)
@@ -53,23 +62,22 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
                 updated_at   = $4
         """, user.id, user.username, chat_id, now_minsk)
 
-    # 1. Ограничиваем пользователя сразу
+    # Ограничение прав пользователя до регистрации
     await bot.restrict_chat_member(
-        chat_id=event.chat.id,
+        chat_id=chat_id,
         user_id=user.id,
-        permissions={
-            "can_send_messages": False,
-            "can_send_media_messages": False,
-            "can_send_polls": False,
-            "can_send_other_messages": False,
-            "can_add_web_page_previews": False,
-            "can_change_info": False,
-            "can_invite_users": False,
-            "can_pin_messages": False,
-        }
+        permissions=ChatPermissions(
+            can_send_messages=False,
+            can_send_media_messages=False,
+            can_send_polls=False,
+            can_send_other_messages=False,
+            can_add_web_page_previews=False,
+            can_change_info=False,
+            can_invite_users=False,
+            can_pin_messages=False,
+        )
     )
 
-    # 2. Приветственное сообщение с упоминанием
     await event.answer(
         f"👋 {user.mention_html()} добро пожаловать!\n\n"
         "Чтобы получить возможность писать в чате — пройди регистрацию в личных сообщениях у бота.\n"
@@ -77,26 +85,19 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot):
         reply_markup=keyboard,
         parse_mode="HTML"
     )
-    
-SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID"))
-ROOT_ID = int(os.getenv("ROOT_ID"))
 
 
-
-import asyncio
-from aiogram.types import Message, ChatPermissions
-
-
+# ====================== Проверка прав админа ======================
 async def is_bot_admin(user_id: int) -> bool:
     if user_id == SUPER_ADMIN_ID:
         return True
-    async with db.pool.acquire() as conn:
+    async with db.get_pool().acquire() as conn:
         return await conn.fetchval(
             "SELECT TRUE FROM bot_admins WHERE telegram_id = $1",
             user_id
         ) is True
 
-# Таймер для временного сообщения
+
 async def send_temp_message(message: Message, text: str, delay: int = 15):
     msg = await message.answer(text)
     await asyncio.sleep(delay)
@@ -106,7 +107,6 @@ async def send_temp_message(message: Message, text: str, delay: int = 15):
         pass
 
 
-# Проверка, что команда используется только админом бота и ответом на сообщение
 async def admin_only(message: Message) -> bool:
     if message.chat.type not in ("group", "supergroup"):
         return False
@@ -118,105 +118,110 @@ async def admin_only(message: Message) -> bool:
         return False
     return True
 
-# ===================== КОМАНДЫ =====================
-from aiogram.types import User
 
-async def get_target_username(user: User | None) -> str | None:
-    if user is None:
-        return None
-
+# ====================== Утилита ======================
+async def get_target_username(user) -> str:
     if user.username:
         return f"@{user.username}"
+    return f"{user.first_name or ''} {user.last_name or ''}".strip() or str(user.id)
 
-    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    return name or None
 
-# /kick
-from admin_logger import log_admin_action
-@router.message(F.text == "/kick")
+# ====================== Команды админа ======================
+@router.message(F.text.startswith("/kick"))
 async def cmd_kick(message: Message, bot: Bot):
+    if not await is_bot_admin(message.from_user.id):
+        await send_temp_message(message, "⛔ У вас нет прав")
+        return
+    target = await get_target_by_username(message)
+    if not target: return
+    target_id, target_username = target
+    try:
+        await bot.ban_chat_member(message.chat.id, target_id)
+        await bot.unban_chat_member(message.chat.id, target_id)
+        await log_admin_action("/kick", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+        await send_temp_message(message, f"👢 @{target_username} кикнут")
+    except Exception as e:
+        print("Kick error:", e)
+        await send_temp_message(message, f"❌ Не удалось кикнуть @{target_username}")
 
-    if message.chat.type not in ("group", "supergroup"):
+
+@router.message(F.text.startswith("/mute"))
+async def cmd_mute(message: Message, bot: Bot):
+    if not await is_bot_admin(message.from_user.id):
+        await send_temp_message(message, "⛔ У вас нет прав для использования этой команды")
         return
 
-    if not await admin_only(message):
-        return
-    user_id = message.reply_to_message.from_user.id
-    chat_id = message.chat.id
-    target = message.reply_to_message.from_user
-
-    await bot.ban_chat_member(chat_id, user_id)
-    await bot.unban_chat_member(chat_id, user_id)
-
-    username = await get_target_username(target)
-    await send_temp_message(message, f"👢 Пользователь {username} кикнут.")
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{now} | INFO | /kick выполнен | {message.from_user.first_name} (@{message.from_user.username}) | target={username} | chat_id={chat_id}")
-
-    await log_admin_action(
-        admin_id=message.from_user.id,
-        action="kick",
-        target_id=target.id,
-        target_username=await get_target_username(target),
-        details=f"chat_id={message.chat.id}"
-    )
-
-# /mute24
-@router.message(F.text == "/mute")
-async def cmd_mute_24(message: Message, bot: Bot):
-
-    if message.chat.type not in ("group", "supergroup"):
+    target = await get_target_by_username(message)
+    if not target:
         return
 
-    if not await admin_only(message):
-        return
-    user_id = message.reply_to_message.from_user.id
-    chat_id = message.chat.id
+    target_id, target_username = target
     until = datetime.utcnow() + timedelta(hours=24)
-    await bot.restrict_chat_member(chat_id, user_id, permissions={"can_send_messages": False}, until_date=until)
-    await send_temp_message(message, "🔇 Пользователь замьючен на 24 часа.")
+    permissions = ChatPermissions(can_send_messages=False)
+    try:
+        await bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions, until_date=until)
+        await log_admin_action("/mute", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+        await send_temp_message(message, f"🔇 @{target_username} замучен на 24 часа")
+    except Exception as e:
+        print("Mute error:", e)
+        await send_temp_message(message, f"❌ Не удалось замутить @{target_username}")
 
-# /pmute
-@router.message(F.text == "/pmute")
-async def cmd_perma_mute(message: Message, bot: Bot):
 
-    if message.chat.type not in ("group", "supergroup"):
+@router.message(F.text.startswith("/pmute"))
+async def cmd_pmute(message: Message, bot: Bot):
+    if not await is_bot_admin(message.from_user.id):
+        await send_temp_message(message, "⛔ У вас нет прав")
         return
+    target = await get_target_by_username(message)
+    if not target: return
+    target_id, target_username = target
+    permissions = ChatPermissions(can_send_messages=False)
+    try:
+        await bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions)
+        await log_admin_action("/pmute", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+        await send_temp_message(message, f"🔇 @{target_username} замучен навсегда")
+    except Exception as e:
+        print("Pmute error:", e)
+        await send_temp_message(message, f"❌ Не удалось замутить @{target_username}")
 
-    if not await admin_only(message):
+@router.message(F.text.startswith("/unmute"))
+async def cmd_unmute(message: Message, bot: Bot):
+    if not await is_bot_admin(message.from_user.id):
+        await send_temp_message(message, "⛔ У вас нет прав")
         return
-    user_id = message.reply_to_message.from_user.id
-    chat_id = message.chat.id
-    await bot.restrict_chat_member(chat_id, user_id, permissions={
-        "can_send_messages": False,
-        "can_send_media_messages": False,
-        "can_send_other_messages": False,
-        "can_add_web_page_previews": False,
-    })
-    await send_temp_message(message, "🔒 Пользователь замьючен перманентно.")
+    target = await get_target_by_username(message)
+    if not target: return
+    target_id, target_username = target
+    permissions = ChatPermissions(
+        can_send_messages=True,
+        can_send_media_messages=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+        can_invite_users=True,
+        can_pin_messages=False
+    )
+    try:
+        await bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions)
+        await log_admin_action("/unmute", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+        await send_temp_message(message, f"🔊 @{target_username} размучен")
+    except Exception as e:
+        print("Unmute error:", e)
+        await send_temp_message(message, f"❌ Не удалось размучить @{target_username}")
 
-# /up @username
+
+# ====================== /up @username ======================
 @router.message(F.text.startswith("/up"))
 async def cmd_up(message: Message, bot: Bot):
-
-    if message.chat.type not in ("group", "supergroup"):
-        return
-
     if not await is_bot_admin(message.from_user.id):
-        await send_temp_message(message, "⛔ У вас нет прав использовать эту команду.")
+        await send_temp_message(message, "⛔ У вас нет прав")
         return
-    parts = message.text.split()
-    if len(parts) != 2 or not parts[1].startswith("@"):
-        await send_temp_message(message, "Использование: /up @username")
-        return
-    username = parts[1][1:]
+    target = await get_target_by_username(message)
+    if not target: return
+    target_id, target_username = target
     async with db.pool.acquire() as conn:
-        user_id = await conn.fetchval("SELECT telegram_id FROM users WHERE username = $1", username)
-    if not user_id:
-        await send_temp_message(message, f"Пользователь @{username} не найден в базе.")
-        return
-    perms = ChatPermissions(
+        await conn.execute("UPDATE users SET is_verified = TRUE, verified_at = NOW() WHERE telegram_id = $1", target_id)
+    permissions = ChatPermissions(
         can_send_messages=True,
         can_send_media_messages=True,
         can_send_polls=True,
@@ -224,61 +229,42 @@ async def cmd_up(message: Message, bot: Bot):
         can_add_web_page_previews=True,
         can_invite_users=True
     )
-    await bot.restrict_chat_member(chat_id=message.chat.id, user_id=user_id, permissions=perms)
-    async with db.pool.acquire() as conn:
-        await conn.execute("UPDATE users SET is_verified = TRUE WHERE telegram_id = $1", user_id)
-    await send_temp_message(message, f"✅ Пользователю @{username} выданы права без регистрации.")
+    try:
+        await bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions)
+    except: pass
+    await log_admin_action("/up", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+    await send_temp_message(message, f"✅ @{target_username} получил права")
 
-# /addadmin @username
+
+# ====================== /addadmin @username  ======================
 @router.message(F.text.startswith("/addadmin"))
-async def cmd_add_admin(message: Message):
-
-    if message.chat.type not in ("group", "supergroup"):
-        return
-
+async def cmd_addadmin(message: Message):
     if message.from_user.id != SUPER_ADMIN_ID:
-        await send_temp_message(message, "⛔ Только владелец бота может добавлять админов.")
+        await send_temp_message(message, "⛔ Только супер-админ")
         return
-    parts = message.text.split()
-    if len(parts) != 2 or not parts[1].startswith("@"):
-        await send_temp_message(message, "Использование: /addadmin @username")
-        return
-    username = parts[1][1:]
-    async with db.pool.acquire() as conn:
-        user_id = await conn.fetchval("SELECT telegram_id FROM users WHERE username = $1", username)
-        if not user_id:
-            await send_temp_message(message, f"Пользователь @{username} не найден.")
-            return
-        await conn.execute("INSERT INTO bot_admins (telegram_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
-    await send_temp_message(message, f"👑 Пользователь @{username} добавлен админом бота.")
+    target = await get_target_by_username(message)
+    if not target: return
+    target_id, target_username = target
+    async with db.get_pool().acquire() as conn:
+        await conn.execute("INSERT INTO bot_admins (telegram_id) VALUES ($1) ON CONFLICT DO NOTHING", target_id)
+    await log_admin_action("/addadmin", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+    await send_temp_message(message, f"✅ @{target_username} добавлен в админы бота")
 
-# /deladmin @username
+# ====================== /deladmin @username  ======================
 @router.message(F.text.startswith("/deladmin"))
-async def cmd_del_admin(message: Message):
-
-    if message.chat.type not in ("group", "supergroup"):
+async def cmd_deladmin(message: Message):
+    if message.from_user.id != SUPER_ADMIN_ID:
+        await send_temp_message(message, "⛔ Только супер-админ")
         return
+    target = await get_target_by_username(message)
+    if not target: return
+    target_id, target_username = target
+    async with db.get_pool().acquire() as conn:
+        await conn.execute("DELETE FROM bot_admins WHERE telegram_id = $1", target_id)
+    await log_admin_action("/deladmin", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+    await send_temp_message(message, f"🗑 @{target_username} удалён из админов бота")
 
-    if message.from_user.id != ROOT_ID:
-        await send_temp_message(message, "⛔ Только владелец бота может удалять админов.")
-        return
-    parts = message.text.split()
-    if len(parts) != 2 or not parts[1].startswith("@"):
-        await send_temp_message(message, "Использование: /deladmin @username")
-        return
-    username = parts[1][1:]
-    async with db.pool.acquire() as conn:
-        user_id = await conn.fetchval("SELECT telegram_id FROM users WHERE username = $1", username)
-        if not user_id:
-            await send_temp_message(message, f"Пользователь @{username} не найден.")
-            return
-        if user_id == ROOT_ID:
-            await send_temp_message(message, "❌ Невозможно удалить root администратора.")
-            return
-        await conn.execute("DELETE FROM bot_admins WHERE telegram_id = $1", user_id)
-    await send_temp_message(message, f"🗑 Пользователь @{username} удалён из админов бота.")
-
-# /help
+# ====================== /help  ======================
 @router.message(F.text == "/help")
 async def cmd_help(message: Message):
 
@@ -286,79 +272,239 @@ async def cmd_help(message: Message):
         return
 
     user_id = message.from_user.id
+
+    # Супер-админ
     if user_id == SUPER_ADMIN_ID:
         help_text = (
             "🛠 Команды бота (Супер админ):\n"
             "/kick — кикнуть пользователя\n"
             "/mute — замутить на 24 часа\n"
             "/pmute — перманентный мут\n"
-            "/umnute — снять мут\n"
+            "/unmute — снять мут\n"
             "/up — выдать права без регистрации\n"
             "/addadmin — добавить админа бота\n"
             "/deladmin — удалить админа бота\n"
-            "/reg_mode on/off - режим контроля регистрации\n"
             "/help — показать это сообщение"
         )
         await send_temp_message(message, help_text)
         return
-    async with db.pool.acquire() as conn:
-        is_admin = await conn.fetchval("SELECT TRUE FROM bot_admins WHERE telegram_id = $1", user_id)
+
+    # Админ бота
+    async with db.get_pool().acquire() as conn:
+        is_admin = await conn.fetchval(
+            "SELECT TRUE FROM bot_admins WHERE telegram_id = $1",
+            user_id
+        )
+
     if is_admin:
         help_text = (
             "🛠 Команды бота (админ):\n"
             "/kick — кикнуть пользователя\n"
             "/mute — замутить на 24 часа\n"
             "/pmute — перманентный мут\n"
-            "/umnute — снять мут\n"
+            "/unmute — снять мут\n"
             "/up — выдать права без регистрации\n"
             "/help — показать это сообщение"
         )
         await send_temp_message(message, help_text)
 
-@router.message(F.text.startswith("/unmute"))
-async def cmd_unmute(message: Message, bot: Bot):
-    if message.chat.type not in ("group", "supergroup"):
-        return
-
-    # Проверка прав
-    if not await is_bot_admin(message.from_user.id):
-        await send_temp_message(message, "⛔ У вас нет прав использовать эту команду.")
-        return
-
-    parts = message.text.split()
+async def get_target_by_username(message: Message):
+    """
+    Получаем цель команды через @username в сообщении.
+    Возвращает (telegram_id, username) или None.
+    """
+    parts = message.text.strip().split()
     if len(parts) != 2 or not parts[1].startswith("@"):
-        await send_temp_message(message, "Использование: /unmute @username")
-        return
+        await send_temp_message(message, "Использование: /команда @username")
+        return None
 
     username = parts[1][1:]  # убираем @
-
-    async with db.pool.acquire() as conn:
-        user_id = await conn.fetchval(
-            "SELECT telegram_id FROM users WHERE username = $1",
+    async with db.get_pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT telegram_id, username FROM users WHERE username = $1",
             username
         )
 
-    if not user_id:
-        await send_temp_message(message, f"Пользователь @{username} не найден в базе.")
+    if not row:
+        await send_temp_message(message, f"Пользователь @{username} не найден в базе")
+        return None
+
+    return row["telegram_id"], row["username"]
+
+
+async def get_target(message: Message):
+    """
+    Возвращает (telegram_id, username) цели.
+    username может быть None.
+    Поддержка:
+    - reply на сообщение
+    - /command @username
+    """
+    # Через reply
+    if message.reply_to_message:
+        u = message.reply_to_message.from_user
+        username = u.username or f"{u.first_name} {u.last_name or ''}".strip()
+        return u.id, username
+
+    # Через аргумент
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].startswith("@"):
+        await send_temp_message(
+            message,
+            "Использование команды:\n"
+            "— ответом на сообщение пользователя\n"
+            "— или: /команда @username"
+        )
+        return None
+
+    username = parts[1][1:]  # убираем @
+    async with db.get_pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT telegram_id, username FROM users WHERE username = $1",
+            username
+        )
+
+    if not row:
+        await send_temp_message(message, f"Пользователь @{username} не найден в базе")
+        return None
+
+    return row["telegram_id"], row["username"] or username  # если в базе нет username, используем введённый
+
+
+async def get_user_by_username(username: str):
+    async with db.get_pool().acquire() as conn:
+        return await conn.fetchrow(
+            "SELECT telegram_id, username FROM users WHERE username = $1",
+            username
+        )
+
+async def get_target_username_only(message: Message):
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].startswith("@"):
+        await message.answer("Использование: /команда @username")
+        return None
+    username = parts[1][1:]
+    user = await db.pool.fetchrow("SELECT telegram_id, username FROM users WHERE username = $1", username)
+    if not user:
+        await message.answer(f"Пользователь @{username} не найден в базе")
+        return None
+    return user["telegram_id"], user["username"]
+
+async def log_admin_action(action, admin_id, admin_username, target_id=None, target_username=None, chat_id=None):
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO admin_action_logs
+            (action, admin_telegram_id, admin_username, target_telegram_id, target_username, chat_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            """,
+            action, admin_id, admin_username, target_id, target_username, chat_id
+        )
+
+async def get_target_reply_or_username(message: Message):
+    if message.reply_to_message:
+        u = message.reply_to_message.from_user
+        return u.id, u.username
+
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].startswith("@"):
+        await message.answer(
+            "Использование:\n— ответом на сообщение\n— или: /команда @username"
+        )
+        return None
+
+    username = parts[1][1:]
+    user = await db.pool.fetchrow("SELECT telegram_id, username FROM users WHERE username = $1", username)
+    if not user:
+        await message.answer(f"Пользователь @{username} не найден в базе")
+        return None
+    return user["telegram_id"], user["username"]
+
+async def get_target_user(message: Message):
+    """
+    Возвращает (telegram_id, username) или None
+    Поддержка:
+    - ответом
+    - /cmd @username
+    """
+    # 1️⃣ Через reply
+    if message.reply_to_message:
+        u = message.reply_to_message.from_user
+        return u.id, u.username
+
+    # 2️⃣ Через аргумент
+    parts = message.text.strip().split()
+    if len(parts) != 2 or not parts[1].startswith("@"):
+        await send_temp_message(
+            message,
+            "Использование команды:\n"
+            "— ответом на сообщение пользователя\n"
+            "— или: /команда @username"
+        )
+        return None
+
+    username = parts[1][1:]
+
+    async with db.get_pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT telegram_id, username FROM users WHERE username = $1",
+            username
+        )
+
+    if not row:
+        await send_temp_message(message, f"Пользователь @{username} не найден в базе")
+        return None
+
+    return row["telegram_id"], row["username"]
+
+
+# ====================== /addadmin @username  ======================
+@router.message(F.text.startswith("/addadmin"))
+async def cmd_addadmin(message: Message):
+    if message.chat.type not in ("group", "supergroup"):
         return
 
-    # Размьючиваем
-    from aiogram.types import ChatPermissions
-    perms = ChatPermissions(
-        can_send_messages=True,
-        can_send_media_messages=True,
-        can_send_polls=True,
-        can_send_other_messages=True,
-        can_add_web_page_previews=True,
-        can_change_info=False,
-        can_invite_users=True,
-        can_pin_messages=False
-    )
+    # Только супер-админ
+    if message.from_user.id != SUPER_ADMIN_ID:
+        await send_temp_message(message, "⛔ Только супер-админ может добавлять админов")
+        return
 
-    await bot.restrict_chat_member(
-        chat_id=message.chat.id,
-        user_id=user_id,
-        permissions=perms
-    )
+    target = await get_target_user(message)
+    if not target:
+        return
+    target_id, target_username = target
 
-    await send_temp_message(message, f"✅ Пользователь @{username} размьючен.")
+    async with db.get_pool().acquire() as conn:
+        await conn.execute(
+            "INSERT INTO bot_admins (telegram_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            target_id
+        )
+
+    await log_admin_action("/addadmin", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+    await send_temp_message(message, f"✅ @{target_username} добавлен в админы бота")
+
+
+# ====================== /deladmin @username  ======================
+@router.message(F.text.startswith("/deladmin"))
+async def cmd_deladmin(message: Message):
+    if message.chat.type not in ("group", "supergroup"):
+        return
+
+    # Только супер-админ
+    if message.from_user.id != SUPER_ADMIN_ID:
+        await send_temp_message(message, "⛔ Только супер-админ может удалять админов")
+        return
+
+    target = await get_target_user(message)
+    if not target:
+        return
+    target_id, target_username = target
+
+    async with db.get_pool().acquire() as conn:
+        await conn.execute(
+            "DELETE FROM bot_admins WHERE telegram_id = $1",
+            target_id
+        )
+
+    await log_admin_action("/deladmin", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
+    await send_temp_message(message, f"🗑 @{target_username} удалён из админов бота")
