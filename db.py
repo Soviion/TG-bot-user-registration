@@ -92,16 +92,6 @@ async def is_user_verified(user_id: int) -> bool:
         logger.error(f"Ошибка проверки верификации пользователя {user_id}: {e}")
         return False
 
-
-async def try_complete_verification(telegram_id: int) -> bool:
-    try:
-        val = await fetchval("SELECT try_verify_user($1)", telegram_id)
-        return bool(val)
-    except Exception as e:
-        logger.error(f"Ошибка завершения верификации {telegram_id}: {e}")
-        return False
-
-
 def get_pool():
     if not pool:
         raise RuntimeError("Pool не инициализирован")

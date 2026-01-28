@@ -274,8 +274,8 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
             data.get("scholarship")
         )
 
-        # Завершаем верификацию если нужно
-        await db.try_complete_verification(user_id)
+        
+        
 
         group_id = await conn.fetchval("SELECT group_id FROM users WHERE telegram_id=$1", user_id)
 
