@@ -79,26 +79,46 @@ async def reg_mode_guard(message: Message, bot: Bot):
         extra=f"chat_id={chat_id}"
     )
 
+    # 1. Удаляем сообщение
     try:
         await message.delete()
     except:
         pass
 
+    # 2. Мут пользователя
     try:
         await bot.restrict_chat_member(
             chat_id=chat_id,
             user_id=user_id,
             permissions=ChatPermissions(can_send_messages=False)
         )
+        
+        # 3. Записываем chat_id в users.group_id
+        async with db.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE users
+                SET group_id = $1,
+                    updated_at = NOW()
+                WHERE telegram_id = $2
+            """, chat_id, user_id)
+
+        log_action(
+            action="REG_MODE: пользователь замучен + group_id записан",
+            user=user,
+            handler="reg_mode_guard",
+            extra=f"chat_id={chat_id}, user_id={user_id}"
+        )
+
     except Exception as e:
         log_action(
-            action="REG_MODE: ошибка мута",
+            action="REG_MODE: ошибка мута или записи group_id",
             user=user,
             handler="reg_mode_guard",
             extra=str(e),
             level="ERROR"
         )
 
+    # 4. Сообщение пользователю
     mention = f"@{user.username}" if user.username else user.full_name
     try:
         await bot.send_message(
