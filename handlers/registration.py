@@ -119,7 +119,16 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     user = message.from_user
-    log_action("Запуск /start", user)
+    chat_type = message.chat.type
+    chat_id = message.chat.id if chat_type in ("group", "supergroup") else None
+
+    log_action(
+        action="Пользователь запустил /start",
+        user=user,
+        handler="cmd_start",
+        extra=f"chat_type={chat_type}, chat_id={chat_id}"
+    )
+
     await log_fsm(state, user, None, "start command")
     await state.clear()
 
@@ -132,6 +141,14 @@ async def cmd_start(message: Message, state: FSMContext):
         """, user.id, user.username)
 
     verified = await db.is_user_verified(user.id)
+
+    log_action(
+        action="Проверен статус верификации после /start",
+        user=user,
+        handler="cmd_start",
+        extra=f"verified={verified}"
+    )
+
     status_emoji = "✅" if verified else "⏳"
     status_text = "зарегистрирован" if verified else "ещё не зарегистрирован"
 
@@ -152,10 +169,7 @@ async def cmd_start(message: Message, state: FSMContext):
         text += "Чтобы писать в группе — пройди регистрацию /reg или нажми кнопку ниже."
         keyboard_buttons.append([KeyboardButton(text="Начать регистрацию")])
 
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=keyboard_buttons,
-        resize_keyboard=True
-    )
+    keyboard = ReplyKeyboardMarkup(keyboard=keyboard_buttons, resize_keyboard=True)
 
     await message.answer(text=text, reply_markup=keyboard)
     log_action("Отправлено приветствие на /start", user)
@@ -168,8 +182,14 @@ async def start_registration(message: Message, state: FSMContext):
 
     user_id = message.from_user.id
     user = message.from_user
-    if await db.is_user_verified(user_id):
+
+    log_action("Пользователь нажал /reg или кнопку регистрации", user, handler="start_registration")
+
+    verified = await db.is_user_verified(user_id)
+
+    if verified:
         await message.answer("Вы уже зарегистрированы и можете писать в группе.")
+        log_action("Попытка повторной регистрации (уже verified)", user)
         return
 
     await state.clear()
@@ -303,6 +323,7 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
 
     # Размут
     unmute_text = await _try_unmute_user(bot, user_id, group_id, user)
+    log_action("Регестрация завершена, записано в бд, пользователь зармучен", user, handler="process_scholarship")
 
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
@@ -314,13 +335,24 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
     await message.answer(f"Регистрация завершена ✅\n{unmute_text}", reply_markup=keyboard)
     await state.clear()
 
+    # Финальная проверка статуса после регистрации
+    verified = await db.is_user_verified(user_id)
+    log_action("Финальная проверка верификации после регистрации", user, extra=f"verified={verified}")
+
 # ================= Статус =================
 @router.message(F.text == "Статус")
 async def show_status(message: Message):
     if message.chat.type != "private":
         return
+    
     user = message.from_user
-    verified = await db.is_user_verified(user.id)
+    user_id = user.id
+
+    log_action("Запрошен статус регистрации", user, handler="show_status")
+
+    # Всегда свежий запрос
+    verified = await db.is_user_verified(user_id)
+
     text = (
         f"Telegram ID: <code>{user.id}</code>\n"
         f"Username: @{user.username or 'None'}\n"
@@ -334,9 +366,15 @@ async def show_status(message: Message):
 async def update_data(message: Message, state: FSMContext):
     if message.chat.type != "private":
         return
+    
     user = message.from_user
     user_id = message.from_user.id
-    if not await db.is_user_verified(user_id):
+
+    log_action("Начато обновление данных", user, handler="update_data")
+
+    # Свежая проверка верификации
+    verified = await db.is_user_verified(user_id)
+    if not verified:
         await message.answer("Вы ещё не зарегистрированы. /reg чтобы начать")
         return
 
