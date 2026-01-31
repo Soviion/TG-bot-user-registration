@@ -53,7 +53,7 @@ async def cmd_reg_mode(message: Message):
     )
 
 # =====================
-# ЛОВУШКА СООБЩЕНИЙ
+# ЛОВУШКА СООБЩЕНИЙ — мут + запись/обновление group_id
 # =====================
 @router.message(F.chat.type.in_(["group", "supergroup"]))
 async def reg_mode_guard(message: Message, bot: Bot):
@@ -67,13 +67,14 @@ async def reg_mode_guard(message: Message, bot: Bot):
     user_id = user.id
     chat_id = message.chat.id
 
+    # Супер-админ и верифицированные — пропускаем
     if is_super_admin(user_id):
         return
     if await db.is_user_verified(user_id):
         return
 
     log_action(
-        action="REG_MODE: сообщение заблокировано",
+        action="REG_MODE: попытка писать без верификации",
         user=user,
         handler="reg_mode_guard",
         extra=f"chat_id={chat_id}"
@@ -82,28 +83,37 @@ async def reg_mode_guard(message: Message, bot: Bot):
     # 1. Удаляем сообщение
     try:
         await message.delete()
-    except:
-        pass
+    except Exception as e:
+        log_action("REG_MODE: ошибка удаления сообщения", user, str(e), level="WARNING")
 
-    # 2. Мут пользователя
+    # 2. Мут + создание/обновление записи в БД
     try:
         await bot.restrict_chat_member(
             chat_id=chat_id,
             user_id=user_id,
             permissions=ChatPermissions(can_send_messages=False)
         )
-        
-        # 3. Записываем chat_id в users.group_id
+
+        # Записываем или обновляем запись в users
         async with db.pool.acquire() as conn:
             await conn.execute("""
-                UPDATE users
-                SET group_id = $1,
+                INSERT INTO users (
+                    telegram_id, 
+                    username, 
+                    is_verified, 
+                    group_id, 
+                    created_at, 
+                    updated_at
+                )
+                VALUES ($1, $2, FALSE, $3, NOW(), NOW())
+                ON CONFLICT (telegram_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    group_id = EXCLUDED.group_id,
                     updated_at = NOW()
-                WHERE telegram_id = $2
-            """, chat_id, user_id)
+            """, user_id, user.username or None, chat_id)
 
         log_action(
-            action="REG_MODE: пользователь замучен + group_id записан",
+            action="REG_MODE: пользователь замучен + запись/обновление group_id",
             user=user,
             handler="reg_mode_guard",
             extra=f"chat_id={chat_id}, user_id={user_id}"
@@ -111,19 +121,19 @@ async def reg_mode_guard(message: Message, bot: Bot):
 
     except Exception as e:
         log_action(
-            action="REG_MODE: ошибка мута или записи group_id",
+            action="REG_MODE: ошибка мута или записи в БД",
             user=user,
             handler="reg_mode_guard",
             extra=str(e),
             level="ERROR"
         )
 
-    # 4. Сообщение пользователю
+    # 3. Сообщение пользователю
     mention = f"@{user.username}" if user.username else user.full_name
     try:
         await bot.send_message(
             chat_id,
             f"⛔ {mention}, чтобы писать в группе — пройди регистрацию:\n👉 @{config.BOT_USERNAME}"
         )
-    except:
-        pass
+    except Exception as e:
+        log_action("REG_MODE: ошибка отправки сообщения", user, str(e), level="WARNING")

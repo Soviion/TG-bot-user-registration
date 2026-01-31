@@ -132,6 +132,7 @@ async def cmd_kick(message: Message, bot: Bot):
     if not await is_bot_admin(message.from_user.id):
         await send_temp_message(message, "⛔ У вас нет прав")
         return
+    user = message.from_user
     target = await get_target_by_username(message)
     if not target: return
     target_id, target_username = target
@@ -143,6 +144,7 @@ async def cmd_kick(message: Message, bot: Bot):
     except Exception as e:
         print("Kick error:", e)
         await send_temp_message(message, f"❌ Не удалось кикнуть @{target_username}")
+    log_action("Использована команда /kick", user)
 
 
 @router.message(F.text.startswith("/mute"))
@@ -165,6 +167,8 @@ async def cmd_mute(message: Message, bot: Bot):
     except Exception as e:
         print("Mute error:", e)
         await send_temp_message(message, f"❌ Не удалось замутить @{target_username}")
+    user = message.from_user
+    log_action("Использована команда /mute", user)
 
 
 @router.message(F.text.startswith("/pmute"))
@@ -183,6 +187,8 @@ async def cmd_pmute(message: Message, bot: Bot):
     except Exception as e:
         print("Pmute error:", e)
         await send_temp_message(message, f"❌ Не удалось замутить @{target_username}")
+    user = message.from_user
+    log_action("Использована команда /pmute", user)
 
 @router.message(F.text.startswith("/unmute"))
 async def cmd_unmute(message: Message, bot: Bot):
@@ -208,6 +214,8 @@ async def cmd_unmute(message: Message, bot: Bot):
     except Exception as e:
         print("Unmute error:", e)
         await send_temp_message(message, f"❌ Не удалось размучить @{target_username}")
+    user = message.from_user
+    log_action("Использована команда /unmute", user)
 
 
 # ====================== /up @username ======================
@@ -234,6 +242,8 @@ async def cmd_up(message: Message, bot: Bot):
     except: pass
     await log_admin_action("/up", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
     await send_temp_message(message, f"✅ @{target_username} получил права")
+    user = message.from_user
+    log_action("Использована команда /up", user)
 
 
 # ====================== /addadmin @username  ======================
@@ -249,6 +259,8 @@ async def cmd_addadmin(message: Message):
         await conn.execute("INSERT INTO bot_admins (telegram_id) VALUES ($1) ON CONFLICT DO NOTHING", target_id)
     await log_admin_action("/addadmin", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
     await send_temp_message(message, f"✅ @{target_username} добавлен в админы бота")
+    user = message.from_user
+    log_action("Использована команда /addadmin", user)
 
 # ====================== /deladmin @username  ======================
 @router.message(F.text.startswith("/deladmin"))
@@ -263,6 +275,8 @@ async def cmd_deladmin(message: Message):
         await conn.execute("DELETE FROM bot_admins WHERE telegram_id = $1", target_id)
     await log_admin_action("/deladmin", message.from_user.id, message.from_user.username, target_id, target_username, message.chat.id)
     await send_temp_message(message, f"🗑 @{target_username} удалён из админов бота")
+    user = message.from_user
+    log_action("Использована команда /deladmin", user)
 
 # ====================== /help  ======================
 @router.message(F.text == "/help")
@@ -307,6 +321,8 @@ async def cmd_help(message: Message):
             "/help — показать это сообщение"
         )
         await send_temp_message(message, help_text)
+    user = message.from_user
+    log_action("Использована команда /help", user)
 
 async def get_target_by_username(message: Message):
     """
