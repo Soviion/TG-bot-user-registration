@@ -413,7 +413,7 @@ async def update_data(message: Message, state: FSMContext):
 
     await state.update_data(**row)
     await show_edit_menu(message, state)
-    log_action("Нажата кнопка - обновить данные", user)
+
 
 # ================= Показ меню редактирования =================
 async def show_edit_menu(message_or_query, state: FSMContext):
