@@ -214,8 +214,7 @@ async def process_full_name(message: Message, state: FSMContext):
     invalid_words = [word for word in words if len(word.replace('-', '').replace('.', '')) < 3]
     if invalid_words:
         return await message.answer(
-            f"Каждое слово в ФИО должно быть минимум 3 символа (без учёта дефисов и точек).\n"
-            f"Некорректные слова: {', '.join(invalid_words)}"
+            f"Некорректный ввод ФИО: {', '.join(invalid_words)}"
         )
 
     await state.update_data(full_name=text)
