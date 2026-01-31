@@ -183,7 +183,7 @@ async def start_registration(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user = message.from_user
 
-    log_action("Пользователь нажал /reg или кнопку регистрации", user, handler="start_registration")
+    log_action("Нажата кнопка /reg или Начать регистрацию", user, handler="start_registration")
 
     verified = await db.is_user_verified(user_id)
 
@@ -204,8 +204,20 @@ async def start_registration(message: Message, state: FSMContext):
 @router.message(Registration.full_name)
 async def process_full_name(message: Message, state: FSMContext):
     text = message.text.strip()
-    if len(text.split()) < 3:
-        return await message.answer("ФИО должно содержать минимум 3 слова.")
+    words = text.split()
+
+    # Проверка: минимум 3 слова
+    if len(words) < 3:
+        return await message.answer("ФИО должно содержать минимум 3 слова (Фамилия Имя Отчество).")
+
+    # Проверка: каждое слово минимум 3 символа (игнорируя дефисы и точки)
+    invalid_words = [word for word in words if len(word.replace('-', '').replace('.', '')) < 3]
+    if invalid_words:
+        return await message.answer(
+            f"Каждое слово в ФИО должно быть минимум 3 символа (без учёта дефисов и точек).\n"
+            f"Некорректные слова: {', '.join(invalid_words)}"
+        )
+
     await state.update_data(full_name=text)
     await state.set_state(Registration.group_number)
     await message.answer("Введите номер группы (6 цифр):")
@@ -279,22 +291,17 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     user = message.from_user
     user_id = user.id
-    chat_id = message.chat.id if message.chat.type in ("group", "supergroup") else None
 
     try:
         async with db.pool.acquire() as conn:
-            # Сохраняем данные, НО НЕ ТРОГАЕМ is_verified
+            # Сохраняем данные, НЕ ТРОГАЕМ is_verified и group_id
             await conn.execute("""
                 INSERT INTO users (
                     telegram_id, username, full_name, group_number, faculty,
                     mobile_number, stud_number, form_educ, scholarship,
-                    group_id, created_at, updated_at
+                    created_at, updated_at
                 )
-                VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                    COALESCE((SELECT group_id FROM users WHERE telegram_id = $1), $10),
-                    NOW(), NOW()
-                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
                 ON CONFLICT (telegram_id) DO UPDATE SET
                     username = EXCLUDED.username,
                     full_name = EXCLUDED.full_name,
@@ -304,8 +311,7 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
                     stud_number = EXCLUDED.stud_number,
                     form_educ = EXCLUDED.form_educ,
                     scholarship = EXCLUDED.scholarship,
-                    updated_at = NOW(),
-                    group_id = COALESCE(users.group_id, EXCLUDED.group_id)
+                    updated_at = NOW()
             """, 
                 user_id,
                 user.username or None,
@@ -315,11 +321,10 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
                 data.get("mobile_number"),
                 data.get("stud_number"),
                 data.get("form_educ"),
-                data.get("scholarship"),
-                chat_id
+                data.get("scholarship")
             )
 
-            # Явно завершаем верификацию
+            # Явно ставим is_verified = TRUE
             await conn.execute("""
                 UPDATE users
                 SET is_verified = TRUE,
@@ -330,12 +335,13 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
             # Получаем group_id
             group_id = await conn.fetchval("SELECT group_id FROM users WHERE telegram_id = $1", user_id)
 
-        log_action("Регистрация завершена, is_verified = TRUE", user, handler="process_scholarship")
+        log_action("Регистрация завершена успешно, is_verified = TRUE", user, handler="process_scholarship")
 
-        # Размутываем (теперь только если verified = TRUE, но поскольку мы только что поставили — всегда)
-        unmute_text = await _try_unmute_user(bot, user_id, group_id, user)
-    
-        log_action("Регестрация завершена, записано в бд, пользователь размучен", user, handler="process_scholarship")
+        # Размут ТОЛЬКО если group_id существует
+        if group_id:
+            unmute_text = await _try_unmute_user(bot, user_id, group_id, user)
+        else:
+            unmute_text = "group_id не найден — размут не выполнен (пользователь не был замучен в группе)"
 
         keyboard = ReplyKeyboardMarkup(
             keyboard=[
@@ -347,11 +353,12 @@ async def process_scholarship(message: Message, state: FSMContext, bot: Bot):
         await message.answer(f"Регистрация завершена ✅\n{unmute_text}", reply_markup=keyboard)
         await state.clear()
 
-        # Финальная проверка статуса после регистрации
+        # Финальная проверка
         verified = await db.is_user_verified(user_id)
-        log_action("Финальная проверка верификации после регистрации", user, extra=f"verified={verified}")
+        log_action("Финальная проверка после регистрации", user, extra=f"verified={verified}, group_id={group_id}")
+
     except Exception as e:
-        log_action("Ошибка в process_scholarship", user, str(e), "ERROR")
+        log_action("Ошибка в process_scholarship", user, str(e), level="ERROR")
         await message.answer("Ошибка при сохранении. Попробуйте заново (/start)")
 
 # ================= Статус =================
@@ -362,8 +369,6 @@ async def show_status(message: Message):
     
     user = message.from_user
     user_id = user.id
-
-    log_action("Запрошен статус регистрации", user, handler="show_status")
 
     # Всегда свежий запрос
     verified = await db.is_user_verified(user_id)
@@ -409,7 +414,7 @@ async def update_data(message: Message, state: FSMContext):
 
     await state.update_data(**row)
     await show_edit_menu(message, state)
-    log_action("Начато обновление данных", user)
+    log_action("Нажата кнопка - обновить данные", user)
 
 # ================= Показ меню редактирования =================
 async def show_edit_menu(message_or_query, state: FSMContext):
@@ -544,22 +549,20 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
 
     await callback.message.delete()
 
+    log_action("Пользователь подтвердил редактирование данных", user, handler="process_confirm_registration")
+
     chat_id = callback.message.chat.id if callback.message.chat.type in ("group", "supergroup") else None
 
     try:
         async with db.pool.acquire() as conn:
-            # Сохраняем данные, НЕ ТРОГАЯ is_verified
+            # Сохраняем данные, НЕ ТРОГАЕМ is_verified и group_id
             await conn.execute("""
                 INSERT INTO users (
                     telegram_id, username, full_name, group_number, faculty,
                     mobile_number, stud_number, form_educ, scholarship,
-                    group_id, created_at, updated_at
+                    created_at, updated_at
                 )
-                VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                    COALESCE((SELECT group_id FROM users WHERE telegram_id = $1), $10),
-                    NOW(), NOW()
-                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
                 ON CONFLICT (telegram_id) DO UPDATE SET
                     username = EXCLUDED.username,
                     full_name = EXCLUDED.full_name,
@@ -569,8 +572,7 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                     stud_number = EXCLUDED.stud_number,
                     form_educ = EXCLUDED.form_educ,
                     scholarship = EXCLUDED.scholarship,
-                    updated_at = NOW(),
-                    group_id = COALESCE(users.group_id, EXCLUDED.group_id)
+                    updated_at = NOW()
             """, 
                 user_id,
                 user.username or None,
@@ -580,11 +582,10 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
                 data.get("mobile_number"),
                 data.get("stud_number"),
                 data.get("form_educ"),
-                data.get("scholarship"),
-                chat_id
+                data.get("scholarship")
             )
 
-            # Явно верифицируем (если редактирование — предполагаем, что данные корректны)
+            # Явно верифицируем
             await conn.execute("""
                 UPDATE users
                 SET is_verified = TRUE,
@@ -594,9 +595,12 @@ async def process_confirm_registration(callback: CallbackQuery, state: FSMContex
 
             group_id = await conn.fetchval("SELECT group_id FROM users WHERE telegram_id = $1", user_id)
 
-        log_action("Редактирование завершено, is_verified = TRUE", user, handler="process_confirm_registration")
+        log_action("Редактирование завершено успешно, is_verified = TRUE", user, handler="process_confirm_registration")
 
-        unmute_text = await _try_unmute_user(bot, user_id, group_id, user)
+        if group_id:
+            unmute_text = await _try_unmute_user(bot, user_id, group_id, user)
+        else:
+            unmute_text = "group_id не найден — размут не выполнен"
 
         await callback.message.answer(f"Данные успешно сохранены ✅\n{unmute_text}")
 
